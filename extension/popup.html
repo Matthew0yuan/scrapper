@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Car Scraper</title>
+    <style>
+      body { font-family: sans-serif; min-width: 260px; padding: 8px; }
+      input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+      button { width: 100%; margin-bottom: 6px; }
+      small { color: #555; }
+    </style>
+  </head>
+  <body>
+    <h3>Car Scraper</h3>
+    <label>
+      车型（逗号分隔）：
+      <input id="models" type="text" value="MG3" />
+    </label>
+    <button id="start">开始采集</button>
+    <button id="stop">停止采集</button>
+    <button id="download">下载 CSV</button>
+    <small id="status"></small>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

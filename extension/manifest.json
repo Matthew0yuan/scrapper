@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Car Price Scraper",
+  "version": "1.0",
+  "description": "自动记录页面上的车价、车型和公司并导出为 CSV。",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": [
+    "*://www.expedia.*/*",
+    "*://*.expedia.*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Car Scraper"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.expedia.*/*",
+        "*://*.expedia.*/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
