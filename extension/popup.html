@@ -2,24 +2,35 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Car Scraper</title>
     <style>
-      body { font-family: sans-serif; min-width: 260px; padding: 8px; }
-      input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
-      button { width: 100%; margin-bottom: 6px; }
-      small { color: #555; }
+      body { font-family: system-ui, Arial; width: 320px; padding: 12px; }
+      input, textarea, button { width: 100%; box-sizing: border-box; }
+      textarea { height: 70px; }
+      .row { margin-bottom: 10px; }
+      button { padding: 10px; cursor: pointer; }
+      .hint { font-size: 12px; opacity: 0.75; }
     </style>
   </head>
   <body>
-    <h3>Car Scraper</h3>
-    <label>
-      车型（逗号分隔）：
-      <input id="models" type="text" value="MG3" />
-    </label>
-    <button id="start">开始采集</button>
-    <button id="stop">停止采集</button>
-    <button id="download">下载 CSV</button>
-    <small id="status"></small>
+    <div class="row">
+      <label>Location (会填到网站输入框)</label>
+      <input id="location" placeholder="Perth (all locations), Australia" />
+    </div>
+
+    <div class="row">
+      <label>Durations (天数，逗号分隔)</label>
+      <input id="durations" placeholder="1,2,3,4,5,6,7,8" />
+      <div class="hint">会自动跑多个 round：1天~8天</div>
+    </div>
+
+    <div class="row">
+      <label>Target Models (可选，逗号分隔，空=不过滤)</label>
+      <textarea id="models" placeholder="mg3,rio,picanto"></textarea>
+    </div>
+
+    <button id="run">Run on this tab</button>
+
+    <div class="row hint" id="status"></div>
 
     <script src="popup.js"></script>
   </body>

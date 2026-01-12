@@ -1,6 +1,6 @@
 (async () => {
   // ===========================
-  // 配置区
+  // 配置区 Current version
   // ===========================
   const LOCATION_TEXT = "Perth (all locations), Australia";
 
