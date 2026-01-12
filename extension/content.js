@@ -20,13 +20,14 @@
       const location = config.location || "Perth (all locations), Australia";
       const durations = config.durations || [1];
       const targetModels = config.targetModels || [];
+      const maxPerDate = config.maxPerDate || 30;
 
-      console.log('[CONTENT] 🔄 Resuming with config:', { location, durations, targetModels });
+      console.log('[CONTENT] 🔄 Resuming with config:', { location, durations, targetModels, maxPerDate });
       console.log('[CONTENT] 🔄 Existing scraped cars:', bgState.scrapedCars?.length);
       console.log('[CONTENT] 🔄 Existing seen keys:', bgState.seenKeys?.length);
 
       // Resume the scraper with existing state
-      runScraper(location, durations, targetModels, bgState.scrapedCars || [], bgState.seenKeys || []);
+      runScraper(location, durations, targetModels, bgState.scrapedCars || [], bgState.seenKeys || [], maxPerDate);
 
       // Don't continue to offer page extraction logic below
       return;
@@ -103,6 +104,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const location = cfg.location || "Perth (all locations), Australia";
     const durationsStr = cfg.durations || "1,2,3,4,5,6,7,8";
     const modelsStr = cfg.models || "";
+    const maxPerDate = parseInt(cfg.maxPerDate) || 30;
 
     const durations = durationsStr.split(",").map(d => parseInt(d.trim())).filter(n => !isNaN(n));
     // Normalize target models: lowercase + remove spaces
@@ -113,11 +115,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Tell background worker scraping is starting
     chrome.runtime.sendMessage({
       type: 'START_SCRAPING',
-      config: { location, durations, targetModels }
+      config: { location, durations, targetModels, maxPerDate }
     });
 
     // Inject and run the scraper with configuration
-    runScraper(location, durations, targetModels);
+    runScraper(location, durations, targetModels, [], [], maxPerDate);
 
     sendResponse({ ok: true });
     return true;
@@ -328,7 +330,7 @@ function downloadCSV(scrapedCars) {
   console.log("[AUTO] ✅ CSV downloaded. Total rows:", scrapedCars.length);
 }
 
-function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], existingKeys = []) {
+function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], existingKeys = [], MAX_VEHICLES_PER_DATE = 30) {
   (async () => {
     // ===========================
     // Configuration
@@ -931,6 +933,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
       const { fullName, baseName } = extractNames(card);
       if (!fullName) return null;
 
+      let matchedModel = null;
       if (TARGET_MODELS.length > 0) {
         // Normalize: lowercase + remove all spaces
         const normalizedName = fullName.toLowerCase().replace(/\s+/g, '');
@@ -942,6 +945,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
           log(`  ⏭️ Skipping ${fullName} (not in target models: ${TARGET_MODELS.join(', ')})`);
           return null;
         }
+        matchedModel = hit; // Store which model was matched
         log(`  ✅ Match found! ${fullName} matches target: ${hit}`);
       }
 
@@ -978,7 +982,8 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
         view_deal_url: viewDealUrl,
         pay_now: "",
         pay_at_pickup: "",
-        _uniqueKey: key // Store key for deduplication
+        _uniqueKey: key, // Store key for deduplication
+        _matchedModel: matchedModel // Store which target model was matched
       };
     }
 
@@ -991,6 +996,12 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
     }
 
     async function autoScrollAndScrape(meta) {
+      // Track how many vehicles we've collected PER MODEL for this specific date
+      const vehiclesPerModel = {}; // model -> count
+      TARGET_MODELS.forEach(model => {
+        vehiclesPerModel[model] = 0;
+      });
+
       // Detect current page number from URL or pagination buttons
       let pageNumber = 1;
       try {
@@ -1161,12 +1172,51 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
               // If no offer page, just add what we have
               scrapedCars.push(info);
 
+              // Track count per model
+              const matchedModel = info._matchedModel;
+              if (matchedModel && vehiclesPerModel.hasOwnProperty(matchedModel)) {
+                vehiclesPerModel[matchedModel]++;
+              }
+
+              // Log progress per model
+              if (TARGET_MODELS.length > 0) {
+                const progressStr = TARGET_MODELS.map(model =>
+                  `${model}: ${vehiclesPerModel[model]}/${MAX_VEHICLES_PER_DATE}`
+                ).join(', ');
+                log(`  📊 Progress per model: ${progressStr}`);
+              }
+
               // Update background state with new car and seen key
               chrome.runtime.sendMessage({
                 type: 'UPDATE_STATE',
                 scrapedCars: scrapedCars,
                 seenKeys: Array.from(seenKeys)
               });
+
+              // Check if ALL models have reached their limit
+              if (TARGET_MODELS.length > 0) {
+                const allModelsComplete = TARGET_MODELS.every(model =>
+                  vehiclesPerModel[model] >= MAX_VEHICLES_PER_DATE
+                );
+
+                if (allModelsComplete) {
+                  const totalCollected = Object.values(vehiclesPerModel).reduce((a, b) => a + b, 0);
+                  log(`✅ All target models reached ${MAX_VEHICLES_PER_DATE} vehicles each!`);
+                  log(`✅ Total collected: ${totalCollected} vehicles. Moving to next date...`);
+                  return totalCollected;
+                }
+              } else {
+                // No target models specified, use old behavior (count all vehicles)
+                const totalVehicles = scrapedCars.filter(car =>
+                  car.pickup_date === meta.pickup_date &&
+                  car.dropoff_date === meta.dropoff_date
+                ).length;
+
+                if (totalVehicles >= MAX_VEHICLES_PER_DATE) {
+                  log(`✅ Reached limit of ${MAX_VEHICLES_PER_DATE} vehicles for this date. Moving to next date...`);
+                  return totalVehicles;
+                }
+              }
             }
           }
 
@@ -1350,6 +1400,18 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
         pageNumber++;
         log(`📄 Now on page ${pageNumber}`);
       }
+
+      // Return the count of vehicles collected for this date
+      if (TARGET_MODELS.length > 0) {
+        const totalCollected = Object.values(vehiclesPerModel).reduce((a, b) => a + b, 0);
+        return totalCollected;
+      } else {
+        // No target models, return count of vehicles for this specific date
+        return scrapedCars.filter(car =>
+          car.pickup_date === meta.pickup_date &&
+          car.dropoff_date === meta.dropoff_date
+        ).length;
+      }
     }
 
     // ===========================
@@ -1409,7 +1471,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
       await sleep(RESULT_EXTRA_WAIT_MS);
 
       log("Round 1 scraping...");
-      await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
+      const round1Count = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days }, 0);
 
       // Check if we should stop after Round 1
       if (shouldStop) {
@@ -1417,7 +1479,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
         return;
       }
 
-      log(`Round 1 done. Total rows: ${scrapedCars.length}`);
+      log(`Round 1 done. Collected ${round1Count} vehicles for this date. Total rows: ${scrapedCars.length}`);
     } else {
       log("Already on results page; starting from round 2.");
     }
@@ -1466,7 +1528,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
       await sleep(RESULT_EXTRA_WAIT_MS);
 
       log("Scraping...");
-      await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
+      const roundCount = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days }, 0);
 
       // Check if we should stop after this round
       if (shouldStop) {
@@ -1474,7 +1536,7 @@ function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars = [], 
         return;
       }
 
-      log(`Round ${i+1} done. Total rows: ${scrapedCars.length}`);
+      log(`Round ${i+1} done. Collected ${roundCount} vehicles for this date. Total rows: ${scrapedCars.length}`);
       window.scrollTo(0, 0);
       await sleep(300);
     }

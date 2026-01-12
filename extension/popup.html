@@ -3,34 +3,192 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { font-family: system-ui, Arial; width: 320px; padding: 12px; }
-      input, textarea, button { width: 100%; box-sizing: border-box; }
-      textarea { height: 70px; }
-      .row { margin-bottom: 10px; }
-      button { padding: 10px; cursor: pointer; }
-      .hint { font-size: 12px; opacity: 0.75; }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        width: 380px;
+        padding: 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: #333;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      }
+
+      .header h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .header p {
+        font-size: 12px;
+        opacity: 0.9;
+      }
+
+      .container {
+        background: white;
+        padding: 20px;
+      }
+
+      .form-group {
+        margin-bottom: 18px;
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 6px;
+      }
+
+      .label-badge {
+        display: inline-block;
+        background: #e0e7ff;
+        color: #667eea;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        margin-left: 6px;
+        font-weight: 500;
+      }
+
+      input, textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 2px solid #e5e7eb;
+        border-radius: 8px;
+        font-size: 13px;
+        font-family: inherit;
+        transition: all 0.2s;
+        background: #f9fafb;
+      }
+
+      input:focus, textarea:focus {
+        outline: none;
+        border-color: #667eea;
+        background: white;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      }
+
+      textarea {
+        height: 70px;
+        resize: vertical;
+        line-height: 1.4;
+      }
+
+      input[type="number"] {
+        font-weight: 600;
+      }
+
+      .hint {
+        font-size: 11px;
+        color: #6b7280;
+        margin-top: 4px;
+        line-height: 1.4;
+      }
+
+      button {
+        width: 100%;
+        padding: 14px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        margin-top: 6px;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      #status {
+        margin-top: 16px;
+        padding: 12px;
+        background: #f3f4f6;
+        border-radius: 8px;
+        font-size: 12px;
+        text-align: center;
+        color: #374151;
+        min-height: 20px;
+        font-weight: 500;
+      }
+
+      #status:empty {
+        display: none;
+      }
+
+      .divider {
+        height: 1px;
+        background: linear-gradient(to right, transparent, #e5e7eb, transparent);
+        margin: 20px 0;
+      }
     </style>
   </head>
   <body>
-    <div class="row">
-      <label>Location (会填到网站输入框)</label>
-      <input id="location" placeholder="Perth (all locations), Australia" />
+    <div class="header">
+      <h1>Car Price Scraper</h1>
+      <p>DiscoverCars Price Collection Tool</p>
     </div>
 
-    <div class="row">
-      <label>Durations (天数，逗号分隔)</label>
-      <input id="durations" placeholder="1,2,3,4,5,6,7,8" />
-      <div class="hint">会自动跑多个 round：1天~8天</div>
+    <div class="container">
+      <div class="form-group">
+        <label>
+          Location
+          <span class="label-badge">REQUIRED</span>
+        </label>
+        <input id="location" placeholder="Perth (all locations), Australia" />
+        <div class="hint">会填到网站的位置输入框</div>
+      </div>
+
+      <div class="form-group">
+        <label>Rental Durations</label>
+        <input id="durations" placeholder="1,2,3,4,5,6,7,8" />
+        <div class="hint">租期天数，逗号分隔 (会自动跑多个 round)</div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="form-group">
+        <label>
+          Target Models
+          <span class="label-badge">OPTIONAL</span>
+        </label>
+        <textarea id="models" placeholder="mg3, rio, picanto"></textarea>
+        <div class="hint">目标车型，逗号分隔，留空则不过滤</div>
+      </div>
+
+      <div class="form-group">
+        <label>Max Vehicles per Model</label>
+        <input id="maxPerDate" type="number" placeholder="30" value="30" min="1" max="999" />
+        <div class="hint">每个车型收集多少辆后切换到下一个租期</div>
+      </div>
+
+      <button id="run">Start Scraping</button>
+
+      <div id="status"></div>
     </div>
-
-    <div class="row">
-      <label>Target Models (可选，逗号分隔，空=不过滤)</label>
-      <textarea id="models" placeholder="mg3,rio,picanto"></textarea>
-    </div>
-
-    <button id="run">Run on this tab</button>
-
-    <div class="row hint" id="status"></div>
 
     <script src="popup.js"></script>
   </body>

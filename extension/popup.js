@@ -1,18 +1,20 @@
 const $ = (id) => document.getElementById(id);
 
 async function loadConfig() {
-  const cfg = await chrome.storage.sync.get(["location", "durations", "models"]);
+  const cfg = await chrome.storage.sync.get(["location", "durations", "models", "maxPerDate"]);
   $("location").value = cfg.location || "Perth (all locations), Australia";
   $("durations").value = cfg.durations || "1,2,3,4,5,6,7,8";
   $("models").value = cfg.models || "";
+  $("maxPerDate").value = cfg.maxPerDate || "30";
 }
 
 async function saveConfig() {
   const location = $("location").value.trim();
   const durations = $("durations").value.trim();
   const models = $("models").value.trim();
-  await chrome.storage.sync.set({ location, durations, models });
-  return { location, durations, models };
+  const maxPerDate = parseInt($("maxPerDate").value) || 30;
+  await chrome.storage.sync.set({ location, durations, models, maxPerDate });
+  return { location, durations, models, maxPerDate };
 }
 
 function setStatus(t) {
