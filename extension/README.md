@@ -1,8 +1,23 @@
 # Car Price Scraper - Chrome Extension (DiscoveryCars)
 
-A Chrome extension that automates car rental price scraping on **DiscoveryCars** across multiple durations and exports the results to CSV format.
+A Chrome extension that automates comprehensive car rental price scraping on **DiscoveryCars** across multiple durations and exports the results to CSV format with detailed payment breakdowns.
 
 **⚠️ Important: This extension is specifically designed for DiscoveryCars.com and may not work on other car rental websites.**
+
+## Quick Summary
+
+This extension automates the entire car rental price comparison workflow:
+
+1. **Configures search parameters** (location, rental durations, car models, max results per date)
+2. **Automates search form** (fills location, selects dates, submits)
+3. **Scrapes search results** (scrolls, paginate, extracts car details)
+4. **Extracts payment details** (opens offer pages in new tabs, extracts payment breakdown)
+5. **Exports comprehensive data** (generates CSV with pricing, categories, and payment terms)
+
+The extension uses a three-component architecture:
+- **Popup**: User interface for configuration
+- **Content Script**: Injected scraper that automates browser actions
+- **Background Worker**: Maintains state across page navigations and coordinates data extraction
 
 ## Features
 
@@ -10,9 +25,13 @@ A Chrome extension that automates car rental price scraping on **DiscoveryCars**
 - 🎯 **Model Filtering**: Filter results by specific car models (Picanto, Rio, MG3, Cerato, etc.)
 - 📍 **Location-based**: Configurable pickup location
 - 🔄 **Auto-pagination**: Automatically scrolls and clicks "Show More" to load all results
-- 📊 **CSV Export**: Downloads scraped data with pricing, categories, and average daily rates
+- 💰 **Payment Breakdown Extraction**: Opens offer pages in new tabs to extract payment details (pay now vs. pay at pickup)
+- 🔢 **Rate Limiting**: Configurable max cars per date to control scraping volume
+- 📊 **CSV Export**: Downloads comprehensive data with pricing, categories, payment terms, and average daily rates
 - 🗓️ **Smart Date Picker**: Handles complex date selection including cross-month date ranges
 - 💪 **Robust Clicking**: Uses advanced event dispatch to handle tricky UI interactions
+- 🔄 **State Persistence**: Maintains scraping state across page navigations and tab switches
+- 🎯 **Intelligent Deduplication**: Prevents duplicate entries using composite keys
 
 ## Installation
 
@@ -51,21 +70,29 @@ A Chrome extension that automates car rental price scraping on **DiscoveryCars**
    - **Durations**: Comma-separated list of rental durations in days (e.g., "1,2,3,4,5,6,7,8")
    - **Target Models** (optional): Comma-separated car models to filter (e.g., "mg3,rio,picanto")
      - Leave empty to scrape all car models
+   - **Max Per Date**: Maximum number of cars to scrape per duration (default: 30)
+     - Controls how many offer pages will be opened for payment extraction
+     - Lower values = faster scraping, higher values = more comprehensive data
 
 3. Your settings are automatically saved for future use
 
 ### Step 3: Run the Scraper
 
 1. Click the **"Run on this tab"** button
-2. The extension will:
+2. The extension will automatically:
    - Fill in the location
    - Select dates for the first duration
    - Submit the search
    - Wait for results to load
-   - Scroll and scrape all car listings
+   - Scroll and scrape car listings (up to max per date)
+   - Open offer pages in new tabs to extract payment breakdown
+   - Extract "Pay now" and "Pay at pickup" amounts
+   - Close offer tabs after extraction
    - Change dates for the next duration
    - Repeat for all configured durations
-   - Download a CSV file with all results
+   - Download a CSV file with all results including payment details
+
+**Note**: You will see new tabs briefly open and close automatically - this is the extension extracting payment information from offer pages.
 
 ### Step 4: Monitor Progress
 
@@ -92,13 +119,16 @@ The exported CSV contains the following columns:
 | `rental_days` | Number of rental days |
 | `category_code` | Car category code (EDAR, SEDAN, etc.) |
 | `category_group` | Car category group description |
+| `pay_now` | Amount to pay upfront (extracted from offer page) |
+| `pay_at_pickup` | Amount to pay at pickup location (extracted from offer page) |
+| `offer_url` | Direct link to the car offer page |
 
 ### Example Output:
 
 ```csv
-"car_name_full","car_name_base","company","price_value","avg_daily_price","pickup_date","dropoff_date","rental_days","category_code","category_group"
-"Kia Picanto or similar","Kia Picanto","East Coast Car Rentals","45.00","45.00","2026-01-09","2026-01-10","1","EDAR","Picanto, Rio & MG3"
-"Kia Rio or similar","Kia Rio","Budget","52.00","26.00","2026-01-09","2026-01-11","2","EDAR","Picanto, Rio & MG3"
+"car_name_full","car_name_base","company","price_value","avg_daily_price","pickup_date","dropoff_date","rental_days","category_code","category_group","pay_now","pay_at_pickup","offer_url"
+"Kia Picanto or similar","Kia Picanto","East Coast Car Rentals","45.00","45.00","2026-01-09","2026-01-10","1","EDAR","Picanto, Rio & MG3","$40.00","$5.00","https://www.discoverycars.com/offer/abc123"
+"Kia Rio or similar","Kia Rio","Budget","52.00","26.00","2026-01-09","2026-01-11","2","EDAR","Picanto, Rio & MG3","$48.00","$4.00","https://www.discoverycars.com/offer/def456"
 ```
 
 ## Configuration Details
@@ -172,22 +202,137 @@ This means the date picker couldn't be found or clicked. Try:
 
 ```
 scrapper/extension/
-├── manifest.json       # Chrome extension configuration
-├── popup.html         # Extension popup UI
-├── popup.js           # Popup logic and message passing
-├── content.js         # Main scraper logic (injected into page)
-├── scrapper.js        # Original standalone scraper (reference)
-└── README.md          # This file
+├── manifest.json              # Chrome extension configuration
+├── popup.html                # Extension popup UI
+├── popup.js                  # Popup logic and message passing
+├── background.js             # Background service worker (state management)
+├── content.js                # Main scraper logic (injected into page)
+├── scrapper.js               # Original standalone scraper (reference)
+├── calenderButtonPress.js    # Date picker utilities (if used)
+├── site2.js                  # Alternative scraper (if used)
+└── README.md                 # This file
 ```
 
-## How It Works
+### Message Flow Diagram
 
-1. **Content Script Injection**: [content.js](content.js) is automatically injected into all pages
-2. **User Configuration**: [popup.js](popup.js) collects user settings and sends them via message
-3. **Scraper Execution**: The content script receives the message and runs the scraper
-4. **Date Automation**: Automatically navigates date pickers and changes dates
-5. **Data Collection**: Scrolls through results, extracts car data, deduplicates
-6. **Export**: Generates CSV and triggers download
+```
+┌─────────────┐                    ┌──────────────┐                   ┌────────────────┐
+│   Popup     │                    │  Background  │                   │  Content       │
+│  (popup.js) │                    │  Worker      │                   │  Script        │
+└─────────────┘                    └──────────────┘                   └────────────────┘
+      │                                    │                                  │
+      │ 1. RUN_SCRAPER                    │                                  │
+      │ (config)                           │                                  │
+      ├────────────────────────────────────────────────────────────────────> │
+      │                                    │                                  │
+      │                                    │ 2. START_SCRAPING                │
+      │                                    │ <────────────────────────────────┤
+      │                                    │                                  │
+      │                                    │                                  │ 3. Scrape results
+      │                                    │                                  │    Open offer tabs
+      │                                    │                                  │
+      │                                    │ 4. TRACK_NEW_TAB                 │
+      │                                    │ <────────────────────────────────┤
+      │                                    │                                  │
+      │                                    │ 5. Tab loads                     │
+      │                                    │ EXTRACT_OFFER_PAGE               │
+      │                                    ├─────────────────────────────────>│
+      │                                    │                                  │
+      │                                    │ 6. STORE_PAYMENT_DATA            │
+      │                                    │ <────────────────────────────────┤
+      │                                    │                                  │
+      │                                    │ 7. GET_PAYMENT_DATA              │
+      │                                    │ <────────────────────────────────┤
+      │                                    │                                  │
+      │                                    │ 8. STOP_SCRAPING                 │
+      │                                    │ <────────────────────────────────┤
+      │                                    │                                  │
+      │                                    │                                  │ 9. Download CSV
+```
+
+## Workflow Overview
+
+This extension uses a three-component architecture to automate car rental price scraping:
+
+### Architecture Components
+
+1. **Popup Interface** ([popup.js](popup.js))
+   - Provides user configuration UI
+   - Collects settings: location, durations, model filters, max per date
+   - Saves configuration to Chrome storage
+   - Sends `RUN_SCRAPER` message to content script
+
+2. **Content Script** ([content.js](content.js))
+   - Injected into all pages automatically
+   - Receives scraper commands from popup
+   - Handles search form automation and date selection
+   - Scrapes car listings from search results
+   - Extracts payment data from offer pages
+   - Generates and downloads CSV files
+
+3. **Background Service Worker** ([background.js](background.js))
+   - Maintains scraping state across page navigations
+   - Manages data cache for payment information
+   - Coordinates extraction from offer pages opened in new tabs
+   - Persists state to Chrome storage for reliability
+
+### Execution Workflow
+
+1. **Configuration Phase**
+   - User opens extension popup and configures settings
+   - Settings saved to Chrome sync storage for persistence
+   - User clicks "Run on this tab" button
+
+2. **Initialization Phase**
+   - Popup sends `RUN_SCRAPER` message to active tab
+   - Content script receives configuration
+   - Background worker initializes scraping state with `START_SCRAPING`
+
+3. **Search Automation Phase**
+   - Content script fills in pickup location
+   - Automatically selects pickup/dropoff dates for first duration
+   - Submits search form and waits for results to load
+
+4. **Results Scraping Phase**
+   - Scrolls through search results page
+   - Clicks "Show More" button to load additional results
+   - Extracts car data: name, company, price, category
+   - Deduplicates entries using composite keys
+   - Limits collection to `maxPerDate` cars per duration
+
+5. **Payment Extraction Phase**
+   - Opens car offer pages in new tabs (Ctrl+Click)
+   - Background worker tracks pending extraction tabs
+   - Content script auto-detects offer pages on load
+   - Extracts payment breakdown (pay now / pay at pickup)
+   - Stores payment data in background cache
+   - Closes offer tabs after extraction
+
+6. **Multi-Duration Loop**
+   - Changes search dates for next duration
+   - Repeats scraping and extraction for each configured duration
+   - Updates background state with accumulated data
+
+7. **Export Phase**
+   - Collects all scraped data with payment details
+   - Generates CSV file with comprehensive car rental information
+   - Triggers browser download
+   - Logs completion with row count
+
+### State Management
+
+The background service worker maintains:
+- `active`: Scraping session status
+- `scrapedCars`: Accumulated car data array
+- `seenKeys`: Deduplication keys set
+- `config`: User configuration object
+- `paymentDataCache`: Payment data indexed by offer URL/ID
+
+State persists across:
+- Page navigations
+- Tab switches
+- New tab opens/closes
+- Service worker restarts
 
 ## Technical Details
 
