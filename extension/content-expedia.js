@@ -153,6 +153,142 @@
   }
 
   // ============================================================================
+  // DATE PICKER HANDLING
+  // ============================================================================
+
+  function getCalendarPanel() {
+    return document.querySelector('.uitk-calendar');
+  }
+
+  async function waitForCalendar(timeoutMs = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const panel = getCalendarPanel();
+      if (panel) return panel;
+      await sleep(200);
+    }
+    return null;
+  }
+
+  async function openDatePicker() {
+    const dateBtn = document.querySelector('button[data-testid="uitk-date-selector-input1-default"]');
+    if (!dateBtn) {
+      log('Date picker button not found');
+      return false;
+    }
+
+    log('Opening date picker...');
+    dateBtn.click();
+    await sleep(500);
+
+    const calendar = await waitForCalendar();
+    if (!calendar) {
+      log('Calendar did not open');
+      return false;
+    }
+
+    log('Calendar opened');
+    return true;
+  }
+
+  function formatDateForAriaLabel(date) {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+
+    const dayName = days[date.getDay()];
+    const monthName = months[date.getMonth()];
+    const dayNum = date.getDate();
+    const year = date.getFullYear();
+
+    return `${dayName}, ${monthName} ${dayNum}, ${year}`;
+  }
+
+  async function clickDateInCalendar(date) {
+    const calendar = getCalendarPanel();
+    if (!calendar) {
+      log('Calendar not found');
+      return false;
+    }
+
+    const targetLabel = formatDateForAriaLabel(date);
+    log(`Looking for date: ${targetLabel}`);
+
+    // Find all clickable day buttons
+    const dayButtons = calendar.querySelectorAll('.uitk-day-button.uitk-day-clickable');
+
+    for (const btn of dayButtons) {
+      const ariaLabelEl = btn.querySelector('.uitk-day-aria-label');
+      if (ariaLabelEl) {
+        const ariaLabel = ariaLabelEl.getAttribute('aria-label') || '';
+        if (ariaLabel.startsWith(targetLabel)) {
+          log(`Clicking date: ${ariaLabel}`);
+          btn.click();
+          await sleep(300);
+          return true;
+        }
+      }
+    }
+
+    log(`Date not found in current view: ${targetLabel}`);
+    return false;
+  }
+
+  async function clickDoneButton() {
+    const doneBtn = document.querySelector('button[data-stid="apply-date-selector"]');
+    if (!doneBtn) {
+      log('Done button not found');
+      return false;
+    }
+
+    log('Clicking Done button...');
+    doneBtn.click();
+    await sleep(500);
+    return true;
+  }
+
+  async function setDates(pickupDate, dropoffDate) {
+    log(`Setting dates: ${formatDateLocal(pickupDate)} to ${formatDateLocal(dropoffDate)}`);
+
+    // Open date picker
+    const opened = await openDatePicker();
+    if (!opened) return false;
+
+    await sleep(300);
+
+    // Click pickup date
+    const clickedPickup = await clickDateInCalendar(pickupDate);
+    if (!clickedPickup) {
+      log('Failed to click pickup date');
+      return false;
+    }
+
+    await sleep(300);
+
+    // Click dropoff date
+    const clickedDropoff = await clickDateInCalendar(dropoffDate);
+    if (!clickedDropoff) {
+      log('Failed to click dropoff date');
+      return false;
+    }
+
+    await sleep(300);
+
+    // Click Done
+    const clicked = await clickDoneButton();
+    if (!clicked) {
+      log('Failed to click Done button');
+      return false;
+    }
+
+    // Wait for calendar to close
+    await sleep(500);
+
+    log(`Dates set successfully: ${formatDateLocal(pickupDate)} to ${formatDateLocal(dropoffDate)}`);
+    return true;
+  }
+
+  // ============================================================================
   // MESSAGE HANDLING
   // ============================================================================
 
@@ -175,9 +311,14 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type !== 'RUN_SCRAPER' || msg.site !== SITE_NAME) return;
+    if (msg.type !== 'RUN_SCRAPER') return;
+
+    // Log the received config for debugging
+    log('Received config:', JSON.stringify(msg.cfg));
+    log('Durations from popup:', msg.cfg?.durations);
 
     const config = parseScraperConfig(msg.cfg);
+    log('Parsed durations array:', config.durations, 'length:', config.durations.length);
 
     sendMessage('START_SCRAPING', {
       config: { site: SITE_NAME, ...config }
@@ -596,6 +737,7 @@
     }
 
     log(`Scraping loop completed after ${idle} idle rounds`);
+    log(`scrapeCurrentPage returning. Cars found this round: ${scrapedCars.length - lastCount}`);
 
     sendMessage('UPDATE_STATE', {
       scrapedCars,
@@ -647,9 +789,10 @@
   async function runScraper(config) {
     const { location, durations, targetModels, maxPerDate } = config;
 
-    log('START durations:', durations);
+    log('START durations:', durations, '(length:', durations.length, ')');
     log('TARGET_MODELS:', targetModels);
     log('LOCATION:', location);
+    log('Will run', durations.length, 'rounds for durations:', durations.join(', '));
 
     if (!isResultsPage()) {
       log('Not on results page. Please navigate to Expedia search results first.');
@@ -661,27 +804,82 @@
       seenKeys: new Set()
     };
 
-    // Scrape current results page
     const now = new Date();
-    const days = durations[0] || 1;
-    const pickupDate = addDays(now, 1);
-    const dropoffDate = addDays(pickupDate, days);
 
-    const meta = {
-      pickup_date: formatDateLocal(pickupDate),
-      dropoff_date: formatDateLocal(dropoffDate),
-      rental_days: days
-    };
+    // Loop through all durations
+    log(`About to start loop. durations.length = ${durations.length}`);
+    for (let i = 0; i < durations.length; i++) {
+      log(`FOR LOOP: Entering iteration i=${i}`);
+      try {
+        const days = durations[i];
+        const pickupDate = addDays(now, 1);
+        const dropoffDate = addDays(pickupDate, days);
 
-    log(`Scraping: ${meta.pickup_date} -> ${meta.dropoff_date} | days=${days}`);
+        const meta = {
+          pickup_date: formatDateLocal(pickupDate),
+          dropoff_date: formatDateLocal(dropoffDate),
+          rental_days: days
+        };
 
-    const count = await scrapeCurrentPage(meta, state, { targetModels, maxPerDate });
-    log(`Scraping complete. Collected ${count} vehicles. Total rows: ${state.scrapedCars.length}`);
+        log(`\n========== Round ${i + 1}/${durations.length} ==========`);
+        log(`Dates: ${meta.pickup_date} -> ${meta.dropoff_date} | days=${days}`);
+
+      // Set dates (skip for first round if dates already match)
+      if (i > 0) {
+        log('Changing dates for next round...');
+        const datesSet = await setDates(pickupDate, dropoffDate);
+        if (!datesSet) {
+          log('Failed to set dates, skipping this round');
+          continue;
+        }
+
+        // Wait for results to reload after date change
+        log('Waiting for results to reload...');
+        await sleep(randomInRange(3000, 5000));
+
+        // Wait for results page to be ready
+        let attempts = 0;
+        while (!isResultsPage() && attempts < 10) {
+          await sleep(1000);
+          attempts++;
+        }
+
+        if (!isResultsPage()) {
+          log('Results page not ready after date change, skipping');
+          continue;
+        }
+      }
+
+      // Scroll to top before scraping
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      await sleep(1000);
+
+      log(`Starting scrapeCurrentPage for round ${i + 1}...`);
+      const count = await scrapeCurrentPage(meta, state, { targetModels, maxPerDate });
+      log(`Round ${i + 1} complete. Collected ${count} vehicles. Total: ${state.scrapedCars.length}`);
+      log(`Loop iteration ${i} finished, moving to next...`);
+
+      // Pause between rounds
+      if (i < durations.length - 1) {
+        const pauseTime = randomInRange(2000, 4000);
+        log(`Pausing ${(pauseTime / 1000).toFixed(1)}s before next round...`);
+        await sleep(pauseTime);
+      }
+      log(`FOR LOOP: End of try block for i=${i}`);
+      } catch (err) {
+        log(`Error in round ${i + 1}: ${err.message}`);
+        console.error(err);
+      }
+      log(`FOR LOOP: Exiting iteration i=${i}, about to increment`);
+    }
+    log(`FOR LOOP: Exited. All iterations done.`);
 
     sendMessage('STOP_SCRAPING').then(() => log('Background worker notified of completion'));
 
-    log('All rounds complete.');
+    log('All rounds complete. Total cars scraped:', state.scrapedCars.length);
+    log('Downloading CSV...');
     downloadCSV(state.scrapedCars);
+    log('CSV download triggered.');
   }
 
 })();
