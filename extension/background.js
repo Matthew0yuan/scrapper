@@ -16,6 +16,9 @@ const paymentDataCache = new Map();
 // Track tabs that we're waiting to extract from
 const pendingExtractionTabs = new Map(); // tabId -> offerUrl
 
+// Track the most recently created offer tab (for Expedia which can't get URL before opening)
+let mostRecentOfferTab = null; // { tabId, url, timestamp }
+
 // Restore state from storage when service worker starts
 (async () => {
   const stored = await chrome.storage.local.get(['scrapingState']);
@@ -166,6 +169,97 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ success: true });
 
+  } else if (message.type === 'GET_MOST_RECENT_OFFER_TAB') {
+    // Get the most recently opened offer tab info
+    console.log('[BG] GET_MOST_RECENT_OFFER_TAB Request');
+
+    if (mostRecentOfferTab) {
+      console.log('[BG] ✅ Most recent offer tab:', mostRecentOfferTab.url);
+      sendResponse(mostRecentOfferTab);
+    } else {
+      console.log('[BG] ❌ No recent offer tab tracked');
+      sendResponse(null);
+    }
+
+  } else if (message.type === 'GET_PAYMENT_DATA_FROM_RECENT_TAB') {
+    // Get payment data from the most recently added cache entry
+    console.log('[BG] ========================================');
+    console.log('[BG] GET_PAYMENT_DATA_FROM_RECENT_TAB Request');
+    console.log('[BG] Cache has', paymentDataCache.size, 'entries');
+
+    if (paymentDataCache.size > 0) {
+      // Get the most recent entry (last one added)
+      const entries = Array.from(paymentDataCache.entries());
+      const [url, data] = entries[entries.length - 1];
+      console.log('[BG] ✅ Retrieved most recent payment data from:', url);
+      console.log('[BG] Data:', data);
+      sendResponse({ ...data, url });
+    } else {
+      console.log('[BG] ❌ No payment data in cache');
+      sendResponse({ payNow: '', payAtPickup: '', url: '' });
+    }
+
+  } else if (message.type === 'CLOSE_SPECIFIC_OFFER_TAB') {
+    // Close a specific offer tab by URL and remove its cache entry
+    console.log('[BG] Closing specific offer tab:', message.offerUrl);
+
+    chrome.tabs.query({}, (tabs) => {
+      const matchingTab = tabs.find(tab => tab.url && tab.url === message.offerUrl);
+
+      if (matchingTab) {
+        console.log(`[BG] Found tab ${matchingTab.id}, closing...`);
+        chrome.tabs.remove(matchingTab.id);
+
+        // Remove this specific entry from cache
+        if (paymentDataCache.has(message.offerUrl)) {
+          paymentDataCache.delete(message.offerUrl);
+          console.log('[BG] Removed from cache:', message.offerUrl);
+        }
+
+        // Also remove by offer ID if it exists
+        const offerIdMatch = message.offerUrl.match(/\/offer\/([^/?#]+)/);
+        if (offerIdMatch) {
+          const offerId = offerIdMatch[1];
+          if (paymentDataCache.has(offerId)) {
+            paymentDataCache.delete(offerId);
+            console.log('[BG] Also removed offer ID from cache:', offerId);
+          }
+        }
+
+        sendResponse({ success: true, closed: true });
+      } else {
+        console.log('[BG] ⚠️ Tab not found for URL:', message.offerUrl);
+        sendResponse({ success: false, closed: false });
+      }
+    });
+
+  } else if (message.type === 'CLOSE_OFFER_TABS') {
+    // Close all offer page tabs and clear cache
+    console.log('[BG] Closing offer page tabs and clearing cache...');
+
+    chrome.tabs.query({}, (tabs) => {
+      const offerTabs = tabs.filter(tab =>
+        tab.url && (tab.url.includes('/carsearch/details') || tab.url.includes('/offer/'))
+      );
+
+      console.log(`[BG] Found ${offerTabs.length} offer page tabs to close`);
+
+      offerTabs.forEach(tab => {
+        console.log(`[BG] Closing tab ${tab.id}: ${tab.url}`);
+        chrome.tabs.remove(tab.id);
+      });
+
+      // Clear the payment data cache
+      paymentDataCache.clear();
+      console.log('[BG] ✅ Cache cleared');
+
+      // Reset the most recent offer tab tracker
+      mostRecentOfferTab = null;
+      console.log('[BG] ✅ Reset most recent offer tab tracker');
+
+      sendResponse({ success: true, closedTabs: offerTabs.length });
+    });
+
   } else if (message.type === 'STOP_SCRAPING') {
     // Stop scraping and download CSV
     scrapingState.active = false;
@@ -193,14 +287,24 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 
     // Also check for offer pages when scraping is active
-    if (!shouldExtract && scrapingState.active && tab.url.includes('/offer/')) {
+    // DiscoveryCars uses '/offer/', Expedia uses '/carsearch/details'
+    if (!shouldExtract && scrapingState.active &&
+        (tab.url.includes('/offer/') || tab.url.includes('/carsearch/details'))) {
       console.log('[BG] Detected offer page while scraping is active');
       shouldExtract = true;
+
+      // Track this as the most recent offer tab (for Expedia)
+      mostRecentOfferTab = {
+        tabId: tabId,
+        url: tab.url,
+        timestamp: Date.now()
+      };
+      console.log('[BG] Tracked as most recent offer tab:', mostRecentOfferTab.url);
     }
 
     if (shouldExtract) {
       console.log('[BG] Sending EXTRACT_OFFER_PAGE to tab', tabId);
-      // Wait 5 seconds for page to fully load and render
+      // Wait 7 seconds for page to fully load and render (Expedia is slower)
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, {
           type: 'EXTRACT_OFFER_PAGE'
@@ -209,7 +313,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         }).catch(err => {
           console.log('[BG] Failed to send extract message:', err);
         });
-      }, 5000);
+      }, 7000);
     }
 
     // OLD LOGIC - keep for backwards compatibility

@@ -64,7 +64,7 @@
         font-weight: 500;
       }
 
-      input, textarea {
+      input, textarea, select {
         width: 100%;
         padding: 10px 12px;
         border: 2px solid #e5e7eb;
@@ -75,11 +75,16 @@
         background: #f9fafb;
       }
 
-      input:focus, textarea:focus {
+      input:focus, textarea:focus, select:focus {
         outline: none;
         border-color: #667eea;
         background: white;
         box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      }
+
+      select {
+        cursor: pointer;
+        font-weight: 600;
       }
 
       textarea {
@@ -149,10 +154,23 @@
   <body>
     <div class="header">
       <h1>Car Price Scraper</h1>
-      <p>DiscoverCars Price Collection Tool</p>
+      <p>Multi-Site Price Collection Tool</p>
     </div>
 
     <div class="container">
+      <div class="form-group">
+        <label>
+          Website
+          <span class="label-badge">SELECT</span>
+        </label>
+        <select id="site">
+          <option value="auto">Auto-detect from URL</option>
+          <option value="discoverycars">DiscoveryCars</option>
+          <option value="expedia">Expedia</option>
+        </select>
+        <div class="hint">Choose the website you're scraping from</div>
+      </div>
+
       <div class="form-group">
         <label>
           Location
