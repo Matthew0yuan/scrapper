@@ -558,34 +558,25 @@
 
       // If no cards were processed, try scrolling down or clicking "Show More"
       if (!processedAny) {
-        const currentScroll = window.scrollY;
-        const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+        // First check if "Show More" button exists and click it
+        const loadMoreBtn = document.getElementById('paginationShowMoreBtn');
+        if (loadMoreBtn && !loadMoreBtn.disabled) {
+          log('Clicking "Show More" button...');
+          await smoothScrollToElement(loadMoreBtn);
+          await sleep(randomInRange(TIMING.beforeClick.min, TIMING.beforeClick.max));
+          loadMoreBtn.click();
 
-        // Check if we can scroll more
-        if (currentScroll < maxScroll - 100) {
-          log('No visible unprocessed cards, scrolling down...');
-          await scrollDownPage(randomInRange(300, 600));
+          const waitTime = randomInRange(TIMING.paginationWait.min, TIMING.paginationWait.max);
+          log(`Waiting ${(waitTime / 1000).toFixed(1)}s for more results...`);
+          await sleep(waitTime);
         } else {
-          // At bottom of page - try "Show More" button
-          const loadMoreBtn = document.getElementById('paginationShowMoreBtn');
-          if (loadMoreBtn && !loadMoreBtn.disabled && isElementPartiallyVisible(loadMoreBtn)) {
-            log('Scrolling to and clicking "Show More" button...');
-            await smoothScrollToElement(loadMoreBtn);
-            await sleep(randomInRange(TIMING.beforeClick.min, TIMING.beforeClick.max));
-            loadMoreBtn.click();
+          // No "Show More" button, try scrolling down
+          const currentScroll = window.scrollY;
+          const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
 
-            const waitTime = randomInRange(TIMING.paginationWait.min, TIMING.paginationWait.max);
-            log(`Waiting ${(waitTime / 1000).toFixed(1)}s for more results...`);
-            await sleep(waitTime);
-
-            // Scroll back to top to start fresh
-            log('Scrolling back to start of results...');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-            await sleep(randomInRange(1500, 2500));
-          } else if (loadMoreBtn && !loadMoreBtn.disabled) {
-            // Button exists but not visible - scroll to it
-            log('Scrolling to "Show More" button...');
-            await smoothScrollToElement(loadMoreBtn);
+          if (currentScroll < maxScroll - 100) {
+            log('No visible unprocessed cards, scrolling down...');
+            await scrollDownPage(randomInRange(300, 600));
           }
         }
       }
