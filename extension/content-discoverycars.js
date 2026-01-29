@@ -1,45 +1,37 @@
-// DiscoveryCars-specific content script
-// This file contains ONLY DiscoveryCars scraping logic
+/**
+ * DiscoveryCars Car Rental Scraper - Content Script
+ * Extracts car rental pricing data from DiscoveryCars search results
+ * Uses shared modules for common functionality
+ */
 
 (function() {
   'use strict';
 
   const SITE_NAME = 'discoverycars';
+  const log = SharedUtils.createLogger(SITE_NAME);
+  const S = Selectors.discoverycars;
+  const T = TimingConfig.discoverycars;
 
-  console.log(`[${SITE_NAME.toUpperCase()}] Content script loaded`);
+  // ============================================================================
+  // MESSAGE HANDLING
+  // ============================================================================
 
-  // ===========================
-  // Message Listener
-  // ===========================
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "RUN_SCRAPER" && msg.site === SITE_NAME) {
       const { cfg } = msg;
 
       const location = cfg.location || "Perth (all locations), Australia";
-      const durationsStr = cfg.durations || "1,2,3,4,5,6,7,8";
-      const modelsStr = cfg.models || "";
+      const durations = SharedUtils.parseIntList(cfg.durations || "1,2,3,4,5,6,7,8");
+      const targetModels = ModelClassifier.parseTargetModels(cfg.models || "");
       const maxPerDate = parseInt(cfg.maxPerDate) || 30;
 
-      const durations = durationsStr.split(",").map(d => parseInt(d.trim())).filter(n => !isNaN(n));
-      const targetModels = modelsStr
-        ? modelsStr.split(",").map(m => m.trim().toLowerCase().replace(/\s+/g, '')).filter(m => m)
-        : [];
-
-      // Tell background worker scraping is starting
       chrome.runtime.sendMessage({
         type: 'START_SCRAPING',
-        config: {
-          site: SITE_NAME,
-          location,
-          durations,
-          targetModels,
-          maxPerDate
-        }
+        config: { site: SITE_NAME, location, durations, targetModels, maxPerDate }
       }, () => {
-        console.log(`[${SITE_NAME.toUpperCase()}] Background worker notified of scraping start`);
+        log('Background worker notified of scraping start');
       });
 
-      // Run the scraper
       runScraper(location, durations, targetModels, [], [], maxPerDate);
 
       sendResponse({ ok: true });
@@ -47,212 +39,117 @@
     }
   });
 
-  // ===========================
-  // Offer Page Auto-Extraction
-  // ===========================
+  log('Content script loaded');
+
+  // ============================================================================
+  // OFFER PAGE AUTO-EXTRACTION
+  // ============================================================================
+
   (async () => {
-    // Check if we're on an offer page
     if (!window.location.href.includes('/offer/')) {
-      console.log(`[${SITE_NAME.toUpperCase()}] Not an offer page, skipping auto-extraction`);
+      log('Not an offer page, skipping auto-extraction');
       return;
     }
 
-    console.log(`[${SITE_NAME.toUpperCase()}] Detected offer page, waiting for content...`);
+    log('Detected offer page, waiting for content...');
 
-    // Wait for the price breakdown element
-    let breakdown = null;
-    let attempts = 0;
-    const maxAttempts = 20;
-
-    while (attempts < maxAttempts && !breakdown) {
-      breakdown = document.querySelector(".OfferPriceBreakdown");
-      if (breakdown) break;
-      await new Promise(r => setTimeout(r, 500));
-      attempts++;
-    }
+    const breakdown = await DomUtils.waitForElement(S.priceBreakdown, 10000, 500);
 
     if (!breakdown) {
-      console.log(`[${SITE_NAME.toUpperCase()}] Price breakdown not found`);
+      log('Price breakdown not found');
       return;
     }
 
-    // Check if scraping is active
-    const response = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
+    const response = await new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'GET_STATE' }, resolve);
+    });
+
     if (response && response.active) {
-      console.log(`[${SITE_NAME.toUpperCase()}] Auto-extracting payment data...`);
+      log('Auto-extracting payment data...');
       await extractOfferPageAndReturn();
     }
   })();
 
-  // ===========================
-  // Offer Page Extraction
-  // ===========================
+  // ============================================================================
+  // OFFER PAGE EXTRACTION
+  // ============================================================================
+
   async function extractOfferPageAndReturn() {
-    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim();
-    const log = (...a) => console.log(`[${SITE_NAME.toUpperCase()}]`, ...a);
+    log('Extracting offer page payment details...');
 
-    log("📄 Extracting offer page payment details...");
-
-    let attempts = 0;
-    let breakdown = null;
-    while (attempts < 10) {
-      breakdown = document.querySelector(".OfferPriceBreakdown");
-      if (breakdown) break;
-      await new Promise(r => setTimeout(r, 800));
-      attempts++;
-    }
+    const breakdown = await DomUtils.waitForElement(S.priceBreakdown, 8000, 800);
 
     if (!breakdown) {
-      log("❌ OfferPriceBreakdown not found");
+      log('OfferPriceBreakdown not found');
       return;
     }
 
-    log("✅ Found OfferPriceBreakdown");
+    log('Found OfferPriceBreakdown');
 
-    const mainPayment = breakdown.querySelector(".OfferPriceBreakdown-Main");
-    const payNowLabel = Array.from(breakdown.querySelectorAll(".Typography-size_2sm"))
-      .find(el => /pay\s*now/i.test(norm(el.textContent)));
+    const mainPayment = breakdown.querySelector(S.priceBreakdownMain);
+    const payNowLabel = Array.from(breakdown.querySelectorAll(S.priceText))
+      .find(el => /pay\s*now/i.test(SharedUtils.normalize(el.textContent)));
+
     let payNow = "";
     if (payNowLabel && mainPayment) {
-      const allPrices = Array.from(mainPayment.querySelectorAll(".Typography-size_2sm"));
+      const allPrices = Array.from(mainPayment.querySelectorAll(S.priceText));
       const idx = allPrices.indexOf(payNowLabel);
       if (idx >= 0 && idx + 1 < allPrices.length) {
-        payNow = norm(allPrices[idx + 1].textContent);
-        log(`✅ Found "Pay now": ${payNow}`);
+        payNow = SharedUtils.normalize(allPrices[idx + 1].textContent);
+        log(`Found "Pay now": ${payNow}`);
       }
     }
 
-    const payAtPickupLabel = Array.from(breakdown.querySelectorAll(".Typography-size_2sm"))
-      .find(el => /pay\s*at\s*pick/i.test(norm(el.textContent)));
+    const payAtPickupLabel = Array.from(breakdown.querySelectorAll(S.priceText))
+      .find(el => /pay\s*at\s*pick/i.test(SharedUtils.normalize(el.textContent)));
+
     let payAtPickup = "";
     if (payAtPickupLabel) {
       const parent = payAtPickupLabel.closest("tr, div");
       if (parent) {
-        const prices = Array.from(parent.querySelectorAll(".Typography-size_2sm"));
+        const prices = Array.from(parent.querySelectorAll(S.priceText));
         const idx = prices.indexOf(payAtPickupLabel);
         if (idx >= 0 && idx + 1 < prices.length) {
-          payAtPickup = norm(prices[idx + 1].textContent);
-          log(`✅ Found "Pay at pickup": ${payAtPickup}`);
+          payAtPickup = SharedUtils.normalize(prices[idx + 1].textContent);
+          log(`Found "Pay at pickup": ${payAtPickup}`);
         }
       }
     }
 
     log(`Payment data extracted: Pay now=${payNow}, Pay at pickup=${payAtPickup}`);
 
-    // Store in background
     chrome.runtime.sendMessage({
       type: 'STORE_PAYMENT_DATA',
       url: window.location.href,
       paymentData: { payNow, payAtPickup }
     }, (response) => {
       if (response && response.success) {
-        log("✅ Data stored in background");
+        log('Data stored in background');
       }
     });
   }
 
-  // ===========================
-  // Main Scraper Function
-  // ===========================
+  // ============================================================================
+  // MAIN SCRAPER
+  // ============================================================================
+
   async function runScraper(LOCATION_TEXT, DURATIONS, TARGET_MODELS, existingCars, existingKeys, MAX_PER_DATE) {
-    const log = (...a) => console.log(`[${SITE_NAME.toUpperCase()}]`, ...a);
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim();
-    const round2 = (n) => Math.round(n * 100) / 100;
-
-    // Configuration constants
-    const SCROLL_STEP = 600;
-    const SCAN_INTERVAL_MS = 800;
-    const MAX_IDLE_ROUNDS = 5;
-    const PANEL_WAIT_TIMEOUT_MS = 8000;
-    const RESULT_EXTRA_WAIT_MS = 3000;
-
-    // Initialize state
     const scrapedCars = existingCars.length > 0 ? [...existingCars] : [];
     const seenKeys = new Set(existingKeys.length > 0 ? existingKeys : []);
 
-    // ===========================
-    // Utility Functions
-    // ===========================
-    function toYMDLocal(d) {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      return `${y}-${m}-${day}`;
-    }
+    // ============================================================================
+    // PAGE STATE DETECTION
+    // ============================================================================
 
-    function addDays(d, n) {
-      const out = new Date(d);
-      out.setDate(out.getDate() + n);
-      return out;
-    }
-
-    function classifyModel(baseName, fullName) {
-      const lowerBase = baseName.toLowerCase();
-      const lowerFull = fullName.toLowerCase();
-
-      if (/(picanto|rio|mg3)/i.test(lowerFull)) {
-        return { category_code: "EDAR", category_group: "Picanto, Rio & MG3" };
-      }
-      if (/(cerato|corolla|i30)/i.test(lowerFull)) {
-        return { category_code: "SEDAN", category_group: "Cerato, Corolla & i30" };
-      }
-      if (/(camry|mazda6|accord)/i.test(lowerFull)) {
-        return { category_code: "IDAR", category_group: "Camry, Mazda6 & Accord" };
-      }
-      if (/(seltos|qashqai|cx-5)/i.test(lowerFull)) {
-        return { category_code: "IFAR", category_group: "Seltos, Qashqai & CX-5" };
-      }
-      if (/(sorento|santa\s*fe|cx-9)/i.test(lowerFull)) {
-        return { category_code: "SFAR", category_group: "Sorento, Santa Fe & CX-9" };
-      }
-
-      return { category_code: "OTHER", category_group: "Other" };
-    }
-
-    function inViewport(el) {
-      if (!el) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.top >= 0 && rect.left >= 0 &&
-             rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-             rect.right <= (window.innerWidth || document.documentElement.clientWidth);
-    }
-
-    function isButtonDisabled(btn) {
-      if (!btn) return true;
-      return btn.disabled || btn.classList.contains("disabled") ||
-             btn.hasAttribute("disabled") || btn.getAttribute("aria-disabled") === "true";
-    }
-
-    function strongClick(el) {
-      if (!el) return;
-      const events = ["mousedown", "mouseup", "click"];
-      events.forEach(evtName => {
-        el.dispatchEvent(new MouseEvent(evtName, { view: window, bubbles: true, cancelable: true }));
-      });
-    }
-
-    function findByText(txt) {
-      const lowerTxt = txt.toLowerCase();
-      return Array.from(document.querySelectorAll("button, input, label, [class*='field' i], [class*='input' i]"))
-        .find(el => {
-          const text = (el.textContent || el.placeholder || "").toLowerCase();
-          return text.includes(lowerTxt);
-        });
-    }
-
-    // ===========================
-    // Page State Detection
-    // ===========================
     function isHomeSearchPage() {
-      return !!document.querySelector("form.SearchModifier-Form");
+      return !!document.querySelector(S.searchForm);
     }
 
     function isResultsPage() {
       return !!(
-        document.querySelector("[data-test-id='virtuoso-list']") ||
-        document.querySelector(".SearchList-Wrapper") ||
-        document.querySelector(".SearchCar-Wrapper")
+        document.querySelector(S.virtuosoList) ||
+        document.querySelector(S.searchListWrapper) ||
+        document.querySelector(S.searchCarWrapper)
       );
     }
 
@@ -260,119 +157,121 @@
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         if (isResultsPage()) return true;
-        await sleep(400);
+        await SharedUtils.sleep(400);
       }
       return false;
     }
 
-    // ===========================
-    // Search Form Interaction
-    // ===========================
+    // ============================================================================
+    // SEARCH FORM INTERACTION
+    // ============================================================================
+
     async function fillLocation() {
       log("Filling location...");
-      const form = document.querySelector("form.SearchModifier-Form");
+      const form = document.querySelector(S.searchForm);
       if (!form) {
-        log("❌ Form not found");
+        log("Form not found");
         return false;
       }
 
-      const locationInput = form.querySelector("input[name='address'], input[type='text'], input[placeholder*='location' i]")
-        || form.querySelector(".SearchModifierLocation-Input input");
+      const locationInput = form.querySelector(S.locationInput) ||
+                           form.querySelector(S.locationInputAlt);
 
       if (!locationInput) {
-        log("❌ Location input not found");
+        log("Location input not found");
         return false;
       }
 
       locationInput.focus();
-      await sleep(200);
+      await SharedUtils.sleep(200);
       locationInput.value = "";
       locationInput.dispatchEvent(new Event("input", { bubbles: true }));
-      await sleep(200);
+      await SharedUtils.sleep(200);
 
       for (const ch of LOCATION_TEXT) {
         locationInput.value += ch;
         locationInput.dispatchEvent(new Event("input", { bubbles: true }));
-        await sleep(50);
+        await SharedUtils.sleep(T.inputDelay);
       }
 
-      await sleep(1000);
-      log(`✅ Location filled: ${LOCATION_TEXT}`);
+      await SharedUtils.sleep(T.locationWait);
+      log(`Location filled: ${LOCATION_TEXT}`);
       return true;
     }
 
     async function clickSearchNow() {
       const searchBtn = Array.from(document.querySelectorAll("button"))
-        .find(b => /search\s*now/i.test(norm(b.textContent)));
+        .find(b => /search\s*now/i.test(SharedUtils.normalize(b.textContent)));
 
-      if (!searchBtn || isButtonDisabled(searchBtn)) {
-        log("❌ Search Now button not found or disabled");
+      if (!searchBtn || DomUtils.isButtonDisabled(searchBtn)) {
+        log("Search Now button not found or disabled");
         return false;
       }
 
-      strongClick(searchBtn);
-      await sleep(800);
-      log("✅ Clicked Search Now");
+      DomUtils.strongClick(searchBtn);
+      await SharedUtils.sleep(T.searchClickWait);
+      log("Clicked Search Now");
       return true;
     }
 
-    // ===========================
-    // Date Picker Handling
-    // ===========================
+    // ============================================================================
+    // DATE PICKER HANDLING
+    // ============================================================================
+
     function getPanel() {
-      return document.querySelector(".rdrCalendarWrapper.rdrDateRangeWrapper")
-        || document.querySelector(".rdrDateRangeWrapper")
-        || document.querySelector(".rdrDateRangePickerWrapper")
-        || document.querySelector(".rdrMonths");
+      return document.querySelector(S.calendarWrapper) ||
+             document.querySelector(S.calendarWrapperAlt) ||
+             document.querySelector(S.calendarPicker) ||
+             document.querySelector(S.calendarMonths);
     }
 
-    async function waitPanel(timeoutMs = PANEL_WAIT_TIMEOUT_MS) {
+    async function waitPanel(timeoutMs = T.panelWaitTimeout) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         const p = getPanel();
         if (p) return p;
-        await sleep(200);
+        await SharedUtils.sleep(200);
       }
       return null;
     }
 
     async function clickDate(panel, date) {
-      const dayButtons = Array.from(panel.querySelectorAll(".rdrDayNumber button"));
+      const dayButtons = Array.from(panel.querySelectorAll(S.dayNumber));
       const targetDay = date.getDate();
 
       for (const btn of dayButtons) {
-        if (isButtonDisabled(btn) || !inViewport(btn)) continue;
-        const numSpan = btn.querySelector(".rdrDayNumber span");
+        if (DomUtils.isButtonDisabled(btn) || !DomUtils.isElementInViewport(btn)) continue;
+        const numSpan = btn.querySelector(S.dayNumberSpan);
         if (numSpan && parseInt(numSpan.textContent.trim()) === targetDay) {
-          strongClick(btn);
-          await sleep(400);
+          DomUtils.strongClick(btn);
+          await SharedUtils.sleep(T.calendarClickWait);
           return true;
         }
       }
 
-      log(`❌ Date click failed: ${toYMDLocal(date)}`);
+      log(`Date click failed: ${SharedUtils.formatDateLocal(date)}`);
       return false;
     }
 
     async function clickApplySelectDatesIfPresent(panel) {
       const dialog = panel.closest("[role='dialog']") || document;
       const buttons = Array.from(dialog.querySelectorAll("button"))
-        .filter(b => /select\s*dates?/i.test(norm(b.textContent)))
-        .filter(b => !isButtonDisabled(b) && inViewport(b));
+        .filter(b => /select\s*dates?/i.test(SharedUtils.normalize(b.textContent)))
+        .filter(b => !DomUtils.isButtonDisabled(b) && DomUtils.isElementInViewport(b));
 
       if (!buttons.length) return false;
 
-      strongClick(buttons[0]);
-      await sleep(500);
-      log('✅ Clicked "Select Dates" button');
+      DomUtils.strongClick(buttons[0]);
+      await SharedUtils.sleep(T.dateSelectWait);
+      log('Clicked "Select Dates" button');
       return true;
     }
 
-    async function waitForPanelClose(timeoutMs = 8000) {
+    async function waitForPanelClose(timeoutMs = T.panelCloseWait) {
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
         if (!getPanel()) return true;
-        await sleep(200);
+        await SharedUtils.sleep(200);
       }
       return true;
     }
@@ -382,59 +281,60 @@
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
         document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", code: "Escape", bubbles: true }));
       } catch (e) {
-        log(`⚠️ Escape key error: ${e.message}`);
+        log(`Escape key error: ${e.message}`);
       }
-      await sleep(200);
+      await SharedUtils.sleep(200);
 
-      const dateBtn = document.querySelector(".DatePicker-CalendarField")
-        || document.querySelector("[class*='CalendarField' i]")
-        || findByText("date");
+      const dateBtn = document.querySelector(S.datePickerField) ||
+                     document.querySelector(S.datePickerFieldAlt) ||
+                     DomUtils.findByText("date");
 
       if (dateBtn) {
         log("Opening date picker...");
-        strongClick(dateBtn);
-        await sleep(600);
+        DomUtils.strongClick(dateBtn);
+        await SharedUtils.sleep(600);
       }
 
       let panel = await waitPanel();
       if (!panel) {
-        log("❌ Calendar panel not found");
+        log("Calendar panel not found");
         return false;
       }
 
-      log("✅ Calendar panel found");
+      log("Calendar panel found");
 
       const ok1 = await clickDate(panel, pickupDate);
-      await sleep(300);
+      await SharedUtils.sleep(300);
 
       panel = getPanel() || panel;
       const ok2 = await clickDate(panel, dropoffDate);
 
       if (ok1 && ok2) {
-        await sleep(300);
+        await SharedUtils.sleep(300);
         await clickApplySelectDatesIfPresent(panel);
-        await sleep(500);
+        await SharedUtils.sleep(T.dateSelectWait);
         await waitForPanelClose();
-        log(`✅ Dates selected: ${toYMDLocal(pickupDate)} → ${toYMDLocal(dropoffDate)}`);
+        log(`Dates selected: ${SharedUtils.formatDateLocal(pickupDate)} -> ${SharedUtils.formatDateLocal(dropoffDate)}`);
       }
 
       return ok1 && ok2;
     }
 
-    // ===========================
-    // Car Extraction
-    // ===========================
+    // ============================================================================
+    // CAR EXTRACTION
+    // ============================================================================
+
     function extractNames(card) {
-      let nameEl = card.querySelector(".SearchCar-CarName h4") ||
-                   card.querySelector(".CarTitle-Name") ||
-                   card.querySelector(".SearchCar-CarName") ||
-                   card.querySelector("[class*='CarName']");
+      let nameEl = card.querySelector(S.carName) ||
+                   card.querySelector(S.carNameAlt1) ||
+                   card.querySelector(S.carNameAlt2) ||
+                   card.querySelector(S.carNameAlt3);
 
       if (!nameEl) {
         return { fullName: null, baseName: null };
       }
 
-      let fullName = norm(nameEl.textContent);
+      let fullName = SharedUtils.normalize(nameEl.textContent);
       let baseName = fullName.split(" or ")[0];
       baseName = baseName.replace(/\(.*?\)/g, "");
 
@@ -448,7 +348,7 @@
         const regex = new RegExp(`\\b${word}\\b`, "gi");
         baseName = baseName.replace(regex, "").trim();
       });
-      baseName = norm(baseName) || fullName;
+      baseName = SharedUtils.normalize(baseName) || fullName;
 
       log(`Found car: ${fullName}`);
       return { fullName, baseName };
@@ -460,38 +360,33 @@
 
       let matchedModel = null;
       if (TARGET_MODELS.length > 0) {
-        const normalizedName = fullName.toLowerCase().replace(/\s+/g, '');
-        const hit = TARGET_MODELS.find(m => {
-          const normalizedModel = m.toLowerCase().replace(/\s+/g, '');
-          return normalizedName.includes(normalizedModel);
-        });
-        if (!hit) {
-          log(`  ⏭️ Skipping ${fullName} (not in target models)`);
+        matchedModel = ModelClassifier.findMatchingModel(fullName, TARGET_MODELS);
+        if (!matchedModel) {
+          log(`  Skipping ${fullName} (not in target models)`);
           return null;
         }
-        matchedModel = hit;
-        log(`  ✅ Match found! ${fullName} matches target: ${hit}`);
+        log(`  Match found! ${fullName} matches target: ${matchedModel}`);
       }
 
-      const priceEl = card.querySelector(".SearchCar-Price strong") ||
-                      card.querySelector(".Price-Value") ||
-                      card.querySelector("[class*='Price' i] strong");
+      const priceEl = card.querySelector(S.carPrice) ||
+                      card.querySelector(S.carPriceAlt1) ||
+                      card.querySelector(S.carPriceAlt2);
 
       if (!priceEl) return null;
 
-      const priceText = norm(priceEl.textContent).replace(/[^\d.]/g, "");
+      const priceText = SharedUtils.normalize(priceEl.textContent).replace(/[^\d.]/g, "");
       const priceValue = parseFloat(priceText);
       if (isNaN(priceValue)) return null;
 
-      const companyEl = card.querySelector(".SearchCar-SupplierName") ||
-                        card.querySelector(".SupplierName") ||
-                        card.querySelector("[class*='Supplier' i]");
-      const company = companyEl ? norm(companyEl.textContent) : "Unknown";
+      const companyEl = card.querySelector(S.supplierName) ||
+                        card.querySelector(S.supplierNameAlt1) ||
+                        card.querySelector(S.supplierNameAlt2);
+      const company = companyEl ? SharedUtils.normalize(companyEl.textContent) : "Unknown";
 
-      const avgDaily = meta.rental_days > 0 ? round2(priceValue / meta.rental_days) : "";
-      const { category_code, category_group } = classifyModel(baseName, fullName);
+      const avgDaily = meta.rental_days > 0 ? SharedUtils.round2(priceValue / meta.rental_days) : "";
+      const { category_code, category_group } = ModelClassifier.classifyModel(fullName, baseName);
 
-      const viewDealBtn = card.querySelector(".SearchCar-CtaBtn, a[href*='/offer/']");
+      const viewDealBtn = card.querySelector(S.viewDealButton);
       const viewDealUrl = viewDealBtn?.href || "";
       const key = `${baseName}|${company}|${priceValue}|${meta.pickup_date}|${meta.dropoff_date}|${category_code}`;
 
@@ -499,7 +394,7 @@
         car_name_full: fullName,
         car_name_base: baseName,
         company,
-        price_value: round2(priceValue),
+        price_value: SharedUtils.round2(priceValue),
         avg_daily_price: avgDaily,
         pickup_date: meta.pickup_date,
         dropoff_date: meta.dropoff_date,
@@ -515,16 +410,16 @@
     }
 
     function getVisibleCards() {
-      const container =
-        document.querySelector("[data-test-id='virtuoso-list']") ||
-        document.querySelector(".SearchList-Wrapper") ||
-        document.body;
-      return Array.from(container.querySelectorAll(".SearchCar-Wrapper"));
+      const container = document.querySelector(S.virtuosoList) ||
+                       document.querySelector(S.searchListWrapper) ||
+                       document.body;
+      return Array.from(container.querySelectorAll(S.searchCarWrapper));
     }
 
-    // ===========================
-    // Scraping Loop
-    // ===========================
+    // ============================================================================
+    // SCRAPING LOOP
+    // ============================================================================
+
     async function autoScrollAndScrape(meta) {
       const vehiclesPerModel = {};
       TARGET_MODELS.forEach(model => {
@@ -535,46 +430,45 @@
       let lastHeight = document.body.scrollHeight;
       let lastCount = scrapedCars.length;
 
-      while (idle < MAX_IDLE_ROUNDS) {
-        log(`  🔄 Scroll iteration: idle=${idle}/${MAX_IDLE_ROUNDS}, cars so far=${scrapedCars.length}`);
+      while (idle < T.maxIdleRounds) {
+        log(`  Scroll iteration: idle=${idle}/${T.maxIdleRounds}, cars so far=${scrapedCars.length}`);
 
-        const showMore =
-          document.querySelector(".SearchList-ShowMoreWrapper .SearchList-ShowMore") ||
-          document.querySelector(".SearchList-ShowMoreWrapper button");
+        const showMore = document.querySelector(S.showMoreWrapper) ||
+                        document.querySelector(S.showMoreButton);
         if (showMore && !showMore.disabled) {
-          log(`  🔘 Clicking "Show More" button`);
+          log(`  Clicking "Show More" button`);
           showMore.click();
-          await sleep(1200);
+          await SharedUtils.sleep(1200);
         }
 
         const cards = getVisibleCards();
-        log(`  📋 Found ${cards.length} car cards on page`);
+        log(`  Found ${cards.length} car cards on page`);
 
         for (const c of cards) {
           const info = parseCarCard(c, meta);
           if (info) {
-            log(`  ✅ Parsed target vehicle: ${info.car_name_base}`);
+            log(`  Parsed target vehicle: ${info.car_name_base}`);
 
             if (seenKeys.has(info._uniqueKey)) {
-              log(`  ⏭️ Already seen: ${info.car_name_base}`);
+              log(`  Already seen: ${info.car_name_base}`);
               continue;
             }
 
             if (TARGET_MODELS.length > 0) {
               const targetModel = info._matchedModel;
               if (vehiclesPerModel[targetModel] >= MAX_PER_DATE) {
-                log(`  🛑 Reached max (${MAX_PER_DATE}) for model: ${targetModel}`);
+                log(`  Reached max (${MAX_PER_DATE}) for model: ${targetModel}`);
                 continue;
               }
             }
 
             seenKeys.add(info._uniqueKey);
 
-            const viewDealBtn = c.querySelector(".SearchCar-CtaBtn, a[href*='/offer/']");
+            const viewDealBtn = c.querySelector(S.viewDealButton);
             const offerUrl = viewDealBtn?.href || '';
 
             if (viewDealBtn && offerUrl) {
-              log(`🎯 Target vehicle found: ${info.car_name_base}, opening in new tab...`);
+              log(`Target vehicle found: ${info.car_name_base}, opening in new tab...`);
 
               try {
                 const newTab = window.open(offerUrl, '_blank');
@@ -583,56 +477,53 @@
                   chrome.runtime.sendMessage({
                     type: 'TRACK_NEW_TAB',
                     offerUrl: offerUrl
-                  }, (response) => {
-                    resolve(response);
-                  });
+                  }, resolve);
                 });
 
-                const waitTime = 5000 + Math.random() * 2000;
-                log(`  ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s for new tab to load...`);
-                await sleep(waitTime);
+                const waitTime = SharedUtils.randomInRange(T.offerWait.min, T.offerWait.max);
+                log(`  Waiting ${(waitTime / 1000).toFixed(1)}s for new tab to load...`);
+                await SharedUtils.sleep(waitTime);
 
                 let paymentData = null;
                 let attempts = 0;
-                const maxAttempts = 10;
                 let gotData = false;
 
-                while (attempts < maxAttempts && !gotData) {
-                  await sleep(2000);
+                while (attempts < T.maxPollAttempts && !gotData) {
+                  await SharedUtils.sleep(T.pollInterval);
 
                   paymentData = await new Promise(resolve => {
                     chrome.runtime.sendMessage({
                       type: 'GET_PAYMENT_DATA',
                       url: offerUrl
-                    }, response => resolve(response));
+                    }, resolve);
                   });
 
                   if (paymentData && (paymentData.payNow || paymentData.payAtPickup)) {
                     info.pay_now = paymentData.payNow || "";
                     info.pay_at_pickup = paymentData.payAtPickup || "";
                     gotData = true;
-                    log(`  💰 Payment data retrieved: pay_now=${info.pay_now}, pay_at_pickup=${info.pay_at_pickup}`);
+                    log(`  Payment data retrieved: pay_now=${info.pay_now}, pay_at_pickup=${info.pay_at_pickup}`);
                   } else {
                     attempts++;
-                    log(`  ⏳ Waiting for payment data... (attempt ${attempts}/${maxAttempts})`);
+                    log(`  Waiting for payment data... (attempt ${attempts}/${T.maxPollAttempts})`);
                   }
                 }
 
                 if (!gotData) {
-                  log(`  ⚠️ Payment data not retrieved after ${maxAttempts} attempts`);
+                  log(`  Payment data not retrieved after ${T.maxPollAttempts} attempts`);
                 }
 
                 if (newTab && !newTab.closed) {
                   try {
                     newTab.close();
-                    log(`  🗑️ Closed offer tab`);
+                    log(`  Closed offer tab`);
                   } catch (e) {
-                    log(`  ⚠️ Could not close tab: ${e.message}`);
+                    log(`  Could not close tab: ${e.message}`);
                   }
                 }
 
               } catch (e) {
-                log(`  ❌ Error opening/processing offer page: ${e.message}`);
+                log(`  Error opening/processing offer page: ${e.message}`);
               }
             }
 
@@ -641,11 +532,11 @@
             if (TARGET_MODELS.length > 0) {
               const targetModel = info._matchedModel;
               vehiclesPerModel[targetModel]++;
-              log(`  📊 Model counts: ${JSON.stringify(vehiclesPerModel)}`);
+              log(`  Model counts: ${JSON.stringify(vehiclesPerModel)}`);
 
               const allModelsReachedMax = TARGET_MODELS.every(model => vehiclesPerModel[model] >= MAX_PER_DATE);
               if (allModelsReachedMax) {
-                log(`  🎉 All target models reached max (${MAX_PER_DATE}), stopping this round`);
+                log(`  All target models reached max (${MAX_PER_DATE}), stopping this round`);
                 return scrapedCars.length - lastCount;
               }
             }
@@ -661,14 +552,14 @@
           lastCount = count;
         } else {
           idle++;
-          log(`  ⏸️ No progress: idle=${idle}/${MAX_IDLE_ROUNDS}`);
+          log(`  No progress: idle=${idle}/${T.maxIdleRounds}`);
         }
 
-        window.scrollBy(0, SCROLL_STEP);
-        await sleep(SCAN_INTERVAL_MS);
+        window.scrollBy(0, T.scrollStep);
+        await SharedUtils.sleep(T.scanInterval);
       }
 
-      log(`🏁 Scroll loop completed after ${idle} idle rounds`);
+      log(`Scroll loop completed after ${idle} idle rounds`);
 
       chrome.runtime.sendMessage({
         type: 'UPDATE_STATE',
@@ -679,53 +570,10 @@
       return scrapedCars.length - lastCount;
     }
 
-    // ===========================
-    // CSV Export
-    // ===========================
-    function downloadCSV() {
-      const headers = [
-        "car_name_full", "car_name_base", "company", "price_value", "avg_daily_price",
-        "pickup_date", "dropoff_date", "rental_days", "category_code", "category_group",
-        "pay_now", "pay_at_pickup", "offer_url"
-      ];
+    // ============================================================================
+    // MAIN FLOW
+    // ============================================================================
 
-      const rows = scrapedCars.map(car => [
-        car.car_name_full,
-        car.car_name_base,
-        car.company,
-        car.price_value,
-        car.avg_daily_price,
-        car.pickup_date,
-        car.dropoff_date,
-        car.rental_days,
-        car.category_code,
-        car.category_group,
-        car.pay_now,
-        car.pay_at_pickup,
-        car.view_deal_url
-      ]);
-
-      const csvContent = [
-        headers.map(h => `"${h}"`).join(","),
-        ...rows.map(r => r.map(cell => `"${String(cell || "")}"`).join(","))
-      ].join("\n");
-
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `cars_${Date.now()}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      log("✅ CSV downloaded. Total rows:", scrapedCars.length);
-    }
-
-    // ===========================
-    // Main Flow
-    // ===========================
     (async () => {
       log("START durations:", DURATIONS);
       log("TARGET_MODELS:", TARGET_MODELS);
@@ -734,37 +582,37 @@
       // Round 1: Home page flow
       if (!isResultsPage()) {
         if (!isHomeSearchPage()) {
-          log("❌ Not on home search page or results page");
+          log("Not on home search page or results page");
           return;
         }
 
         const now = new Date();
         const days = DURATIONS[0];
-        const pickupDate = addDays(now, 1);
-        const dropoffDate = addDays(pickupDate, days);
+        const pickupDate = SharedUtils.addDays(now, 1);
+        const dropoffDate = SharedUtils.addDays(pickupDate, days);
 
         await fillLocation();
-        await sleep(500);
+        await SharedUtils.sleep(500);
 
         const okDates = await setDatesOnResults(pickupDate, dropoffDate);
         if (!okDates) {
-          log("⚠️ Date selection failed");
+          log("Date selection failed");
         }
 
-        await sleep(500);
+        await SharedUtils.sleep(500);
         await clickSearchNow();
 
         const okRes = await waitForResults();
         if (!okRes) {
-          log("⚠️ Results page not loaded");
+          log("Results page not loaded");
           return;
         }
 
-        log(`Waiting ${RESULT_EXTRA_WAIT_MS/1000}s...`);
-        await sleep(RESULT_EXTRA_WAIT_MS);
+        log(`Waiting ${T.resultExtraWait/1000}s...`);
+        await SharedUtils.sleep(T.resultExtraWait);
 
-        const pickupStr = toYMDLocal(pickupDate);
-        const dropoffStr = toYMDLocal(dropoffDate);
+        const pickupStr = SharedUtils.formatDateLocal(pickupDate);
+        const dropoffStr = SharedUtils.formatDateLocal(dropoffDate);
 
         log(`Round1 HOME | ${pickupStr} -> ${dropoffStr} | days=${days}`);
         log("Round1 scrape...");
@@ -776,30 +624,30 @@
       for (let i = (isResultsPage() ? 0 : 1); i < DURATIONS.length; i++) {
         const days = DURATIONS[i];
         const now = new Date();
-        const pickupDate = addDays(now, 1);
-        const dropoffDate = addDays(pickupDate, days);
-        const pickupStr = toYMDLocal(pickupDate);
-        const dropoffStr = toYMDLocal(dropoffDate);
+        const pickupDate = SharedUtils.addDays(now, 1);
+        const dropoffDate = SharedUtils.addDays(pickupDate, days);
+        const pickupStr = SharedUtils.formatDateLocal(pickupDate);
+        const dropoffStr = SharedUtils.formatDateLocal(dropoffDate);
 
         log(`Round${i + 1} | ${pickupStr} -> ${dropoffStr} | days=${days}`);
 
         const okDates = await setDatesOnResults(pickupDate, dropoffDate);
         if (!okDates) {
-          log("⚠️ Skipping: date change failed.");
+          log("Skipping: date change failed.");
           continue;
         }
 
-        await sleep(500);
+        await SharedUtils.sleep(500);
         await clickSearchNow();
 
         const okRes = await waitForResults();
         if (!okRes) {
-          log("⚠️ Skipping: results not loaded after Search Now.");
+          log("Skipping: results not loaded after Search Now.");
           continue;
         }
 
-        log(`Waiting ${RESULT_EXTRA_WAIT_MS/1000}s...`);
-        await sleep(RESULT_EXTRA_WAIT_MS);
+        log(`Waiting ${T.resultExtraWait/1000}s...`);
+        await SharedUtils.sleep(T.resultExtraWait);
 
         log("Scraping...");
         const roundCount = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
@@ -811,7 +659,7 @@
       });
 
       log("All rounds complete.");
-      downloadCSV();
+      CsvExport.downloadCSV(scrapedCars, SITE_NAME, log);
     })();
   }
 

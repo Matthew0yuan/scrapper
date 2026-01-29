@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Car Price Scraper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Injects a scraper into the current page and downloads CSV.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
@@ -15,7 +15,17 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js", "content-discoverycars.js", "content-expedia.js"],
+      "js": [
+        "shared/utils.js",
+        "shared/dom-utils.js",
+        "shared/selectors.js",
+        "shared/timing.js",
+        "shared/csv-export.js",
+        "shared/model-classifier.js",
+        "content.js",
+        "content-discoverycars.js",
+        "content-expedia.js"
+      ],
       "run_at": "document_idle"
     }
   ]
