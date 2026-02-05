@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 async function loadConfig() {
   const cfg = await chrome.storage.sync.get(["site", "location", "durations", "models", "maxPerDate"]);
-  $("site").value = cfg.site || "auto";
+  $("site").value = cfg.site || "discoverycars";
   $("location").value = cfg.location || "Perth (all locations), Australia";
   $("durations").value = cfg.durations || "1,2,3,4,5,6,7,8";
   $("models").value = cfg.models || "";

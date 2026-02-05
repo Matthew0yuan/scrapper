@@ -63,9 +63,9 @@ const Selectors = {
     carNameAlt1: '.CarTitle-Name',
     carNameAlt2: '.SearchCar-CarName',
     carNameAlt3: '[class*="CarName"]',
-    carPrice: '.SearchCar-Price strong',
-    carPriceAlt1: '.Price-Value',
-    carPriceAlt2: '[class*="Price" i] strong',
+    carPrice: '.SearchCar-Price',
+    carPriceAlt1: '.SearchCar-Price strong',
+    carPriceAlt2: '.Price-Value',
     supplierName: '.SearchCar-SupplierName',
     supplierNameAlt1: '.SupplierName',
     supplierNameAlt2: '[class*="Supplier" i]',
@@ -74,6 +74,8 @@ const Selectors = {
     // Offer Page
     priceBreakdown: '.OfferPriceBreakdown',
     priceBreakdownMain: '.OfferPriceBreakdown-Main',
+    priceExtra: '.OfferPriceBreakdown-Extra',
+    priceExtraTitle: '.OfferPriceBreakdown-ExtraTitle',
     priceText: '.Typography-size_2sm'
   }
 };

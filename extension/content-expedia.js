@@ -182,7 +182,7 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type !== 'RUN_SCRAPER') return;
+    if (msg.type !== 'RUN_SCRAPER' || msg.cfg?.site !== SITE_NAME) return;
 
     log('Received config:', JSON.stringify(msg.cfg));
     const config = parseScraperConfig(msg.cfg);

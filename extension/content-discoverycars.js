@@ -4,7 +4,7 @@
  * Uses shared modules for common functionality
  */
 
-(function() {
+(function () {
   'use strict';
 
   const SITE_NAME = 'discoverycars';
@@ -17,7 +17,7 @@
   // ============================================================================
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === "RUN_SCRAPER" && msg.site === SITE_NAME) {
+    if (msg.type === "RUN_SCRAPER" && msg.cfg?.site === SITE_NAME) {
       const { cfg } = msg;
 
       const location = cfg.location || "Perth (all locations), Australia";
@@ -37,6 +37,14 @@
       sendResponse({ ok: true });
       return true;
     }
+
+    if (msg.type === "EXTRACT_OFFER_PAGE") {
+      log('Received EXTRACT_OFFER_PAGE command');
+      extractOfferPageAndReturn().then(() => {
+        sendResponse({ success: true });
+      });
+      return true;
+    }
   });
 
   log('Content script loaded');
@@ -47,26 +55,33 @@
 
   (async () => {
     if (!window.location.href.includes('/offer/')) {
-      log('Not an offer page, skipping auto-extraction');
+      // Not an offer page
       return;
     }
 
-    log('Detected offer page, waiting for content...');
+    log('Offer page detected (IIFE). URL:', window.location.href);
 
+    // Wait for content regardless of state, effectively warming up the cache/DOM
     const breakdown = await DomUtils.waitForElement(S.priceBreakdown, 10000, 500);
 
     if (!breakdown) {
-      log('Price breakdown not found');
+      log('Price breakdown not found (timeout)');
       return;
     }
 
+    // Check state just to be polite, but we rely on the background script triggering us mostly.
+    // However, if we are here, we might as well extract.
     const response = await new Promise(resolve => {
       chrome.runtime.sendMessage({ type: 'GET_STATE' }, resolve);
     });
 
-    if (response && response.active) {
-      log('Auto-extracting payment data...');
+    log('State response:', response);
+
+    if (response && (response.active || response.waitingForOfferPage)) {
+      log('State active, extracting...');
       await extractOfferPageAndReturn();
+    } else {
+      log('State not active, skipping auto-extraction. Waiting for signal.');
     }
   })();
 
@@ -86,32 +101,40 @@
 
     log('Found OfferPriceBreakdown');
 
-    const mainPayment = breakdown.querySelector(S.priceBreakdownMain);
-    const payNowLabel = Array.from(breakdown.querySelectorAll(S.priceText))
-      .find(el => /pay\s*now/i.test(SharedUtils.normalize(el.textContent)));
-
+    const sections = Array.from(breakdown.querySelectorAll(S.priceBreakdownMain));
     let payNow = "";
-    if (payNowLabel && mainPayment) {
-      const allPrices = Array.from(mainPayment.querySelectorAll(S.priceText));
-      const idx = allPrices.indexOf(payNowLabel);
-      if (idx >= 0 && idx + 1 < allPrices.length) {
-        payNow = SharedUtils.normalize(allPrices[idx + 1].textContent);
-        log(`Found "Pay now": ${payNow}`);
-      }
-    }
-
-    const payAtPickupLabel = Array.from(breakdown.querySelectorAll(S.priceText))
-      .find(el => /pay\s*at\s*pick/i.test(SharedUtils.normalize(el.textContent)));
-
     let payAtPickup = "";
-    if (payAtPickupLabel) {
-      const parent = payAtPickupLabel.closest("tr, div");
-      if (parent) {
-        const prices = Array.from(parent.querySelectorAll(S.priceText));
-        const idx = prices.indexOf(payAtPickupLabel);
-        if (idx >= 0 && idx + 1 < prices.length) {
-          payAtPickup = SharedUtils.normalize(prices[idx + 1].textContent);
-          log(`Found "Pay at pickup": ${payAtPickup}`);
+
+    for (const section of sections) {
+      // Find the label text (typically the first text element in the section)
+      const labelEl = section.querySelector(S.priceText);
+      if (!labelEl) continue;
+
+      const labelText = SharedUtils.normalize(labelEl.textContent);
+
+      if (/pay\s*now/i.test(labelText)) {
+        const extra = section.querySelector(S.priceExtra);
+        if (extra) {
+          // Find price elements that are NOT titles
+          const prices = Array.from(extra.querySelectorAll(S.priceText))
+            .filter(el => !el.matches(S.priceExtraTitle));
+
+          if (prices.length > 0) {
+            payNow = SharedUtils.normalize(prices[0].textContent);
+            log(`Found "Pay now": ${payNow}`);
+          }
+        }
+      } else if (/pay\s*at\s*pick/i.test(labelText)) {
+        const extra = section.querySelector(S.priceExtra);
+        if (extra) {
+          // Find price elements that are NOT titles
+          const prices = Array.from(extra.querySelectorAll(S.priceText))
+            .filter(el => !el.matches(S.priceExtraTitle));
+
+          if (prices.length > 0) {
+            payAtPickup = SharedUtils.normalize(prices[0].textContent);
+            log(`Found "Pay at pickup": ${payAtPickup}`);
+          }
         }
       }
     }
@@ -175,7 +198,7 @@
       }
 
       const locationInput = form.querySelector(S.locationInput) ||
-                           form.querySelector(S.locationInputAlt);
+        form.querySelector(S.locationInputAlt);
 
       if (!locationInput) {
         log("Location input not found");
@@ -220,9 +243,9 @@
 
     function getPanel() {
       return document.querySelector(S.calendarWrapper) ||
-             document.querySelector(S.calendarWrapperAlt) ||
-             document.querySelector(S.calendarPicker) ||
-             document.querySelector(S.calendarMonths);
+        document.querySelector(S.calendarWrapperAlt) ||
+        document.querySelector(S.calendarPicker) ||
+        document.querySelector(S.calendarMonths);
     }
 
     async function waitPanel(timeoutMs = T.panelWaitTimeout) {
@@ -236,20 +259,38 @@
     }
 
     async function clickDate(panel, date) {
-      const dayButtons = Array.from(panel.querySelectorAll(S.dayNumber));
       const targetDay = date.getDate();
+      log(`Looking for day ${targetDay} in calendar...`);
 
-      for (const btn of dayButtons) {
-        if (DomUtils.isButtonDisabled(btn) || !DomUtils.isElementInViewport(btn)) continue;
-        const numSpan = btn.querySelector(S.dayNumberSpan);
-        if (numSpan && parseInt(numSpan.textContent.trim()) === targetDay) {
-          DomUtils.strongClick(btn);
-          await SharedUtils.sleep(T.calendarClickWait);
-          return true;
+      // Try multiple selector strategies
+      const selectors = [
+        S.dayNumber,                           // .rdrDayNumber button
+        '.rdrDay:not(.rdrDayPassive) .rdrDayNumber span',  // react-date-range day spans
+        '.rdrDay:not(.rdrDayPassive)',         // react-date-range day divs
+        '[class*="Day"]:not([class*="disabled"])'  // generic day elements
+      ];
+
+      for (const selector of selectors) {
+        const elements = Array.from(panel.querySelectorAll(selector));
+        log(`Selector "${selector}" found ${elements.length} elements`);
+
+        for (const el of elements) {
+          if (DomUtils.isButtonDisabled(el)) continue;
+
+          // Get the day number from the element or its children
+          const text = el.textContent?.trim();
+          const dayNum = parseInt(text);
+
+          if (dayNum === targetDay) {
+            log(`Found day ${targetDay}, clicking...`);
+            DomUtils.strongClick(el);
+            await SharedUtils.sleep(T.calendarClickWait);
+            return true;
+          }
         }
       }
 
-      log(`Date click failed: ${SharedUtils.formatDateLocal(date)}`);
+      log(`Date click failed: ${SharedUtils.formatDateLocal(date)} (day ${targetDay})`);
       return false;
     }
 
@@ -286,8 +327,8 @@
       await SharedUtils.sleep(200);
 
       const dateBtn = document.querySelector(S.datePickerField) ||
-                     document.querySelector(S.datePickerFieldAlt) ||
-                     DomUtils.findByText("date");
+        document.querySelector(S.datePickerFieldAlt) ||
+        DomUtils.findByText("date");
 
       if (dateBtn) {
         log("Opening date picker...");
@@ -326,9 +367,9 @@
 
     function extractNames(card) {
       let nameEl = card.querySelector(S.carName) ||
-                   card.querySelector(S.carNameAlt1) ||
-                   card.querySelector(S.carNameAlt2) ||
-                   card.querySelector(S.carNameAlt3);
+        card.querySelector(S.carNameAlt1) ||
+        card.querySelector(S.carNameAlt2) ||
+        card.querySelector(S.carNameAlt3);
 
       if (!nameEl) {
         return { fullName: null, baseName: null };
@@ -350,7 +391,6 @@
       });
       baseName = SharedUtils.normalize(baseName) || fullName;
 
-      log(`Found car: ${fullName}`);
       return { fullName, baseName };
     }
 
@@ -369,18 +409,24 @@
       }
 
       const priceEl = card.querySelector(S.carPrice) ||
-                      card.querySelector(S.carPriceAlt1) ||
-                      card.querySelector(S.carPriceAlt2);
+        card.querySelector(S.carPriceAlt1) ||
+        card.querySelector(S.carPriceAlt2);
 
-      if (!priceEl) return null;
+      if (!priceEl) {
+        if (matchedModel) log(`  Warning: No price element for ${fullName}`);
+        return null;
+      }
 
       const priceText = SharedUtils.normalize(priceEl.textContent).replace(/[^\d.]/g, "");
       const priceValue = parseFloat(priceText);
-      if (isNaN(priceValue)) return null;
+      if (isNaN(priceValue)) {
+        if (matchedModel) log(`  Warning: Invalid price "${priceText}" for ${fullName}`);
+        return null;
+      }
 
       const companyEl = card.querySelector(S.supplierName) ||
-                        card.querySelector(S.supplierNameAlt1) ||
-                        card.querySelector(S.supplierNameAlt2);
+        card.querySelector(S.supplierNameAlt1) ||
+        card.querySelector(S.supplierNameAlt2);
       const company = companyEl ? SharedUtils.normalize(companyEl.textContent) : "Unknown";
 
       const avgDaily = meta.rental_days > 0 ? SharedUtils.round2(priceValue / meta.rental_days) : "";
@@ -411,8 +457,8 @@
 
     function getVisibleCards() {
       const container = document.querySelector(S.virtuosoList) ||
-                       document.querySelector(S.searchListWrapper) ||
-                       document.body;
+        document.querySelector(S.searchListWrapper) ||
+        document.body;
       return Array.from(container.querySelectorAll(S.searchCarWrapper));
     }
 
@@ -426,31 +472,28 @@
         vehiclesPerModel[model] = 0;
       });
 
-      let idle = 0;
-      let lastHeight = document.body.scrollHeight;
-      let lastCount = scrapedCars.length;
+      let idleAtBottom = 0;
+      let lastScrollY = window.scrollY;
+      const initialCount = scrapedCars.length;
 
-      while (idle < T.maxIdleRounds) {
-        log(`  Scroll iteration: idle=${idle}/${T.maxIdleRounds}, cars so far=${scrapedCars.length}`);
+      while (idleAtBottom < T.maxIdleRounds) {
+        const scrollY = window.scrollY;
+        const viewportHeight = window.innerHeight;
+        const pageHeight = document.body.scrollHeight;
+        const isNearBottom = (scrollY + viewportHeight) >= (pageHeight - 100);
 
-        const showMore = document.querySelector(S.showMoreWrapper) ||
-                        document.querySelector(S.showMoreButton);
-        if (showMore && !showMore.disabled) {
-          log(`  Clicking "Show More" button`);
-          showMore.click();
-          await SharedUtils.sleep(1200);
-        }
+        log(`  Scroll: y=${Math.round(scrollY)}, pageH=${pageHeight}, atBottom=${isNearBottom}, idle=${idleAtBottom}/${T.maxIdleRounds}, cars=${scrapedCars.length}`);
 
         const cards = getVisibleCards();
-        log(`  Found ${cards.length} car cards on page`);
 
         for (const c of cards) {
+          // Skip already processed DOM elements
+          if (c.dataset.scraped) continue;
+          c.dataset.scraped = '1';
+
           const info = parseCarCard(c, meta);
           if (info) {
-            log(`  Parsed target vehicle: ${info.car_name_base}`);
-
             if (seenKeys.has(info._uniqueKey)) {
-              log(`  Already seen: ${info.car_name_base}`);
               continue;
             }
 
@@ -462,68 +505,95 @@
               }
             }
 
+            log(`  New vehicle: ${info.car_name_base}`);
             seenKeys.add(info._uniqueKey);
 
             const viewDealBtn = c.querySelector(S.viewDealButton);
             const offerUrl = viewDealBtn?.href || '';
 
-            if (viewDealBtn && offerUrl) {
-              log(`Target vehicle found: ${info.car_name_base}, opening in new tab...`);
+            if (viewDealBtn) {
+              log(`  Clicking offer button for: ${info.car_name_base}`);
 
+              // Clear previous offer tabs for cleanliness
               try {
-                const newTab = window.open(offerUrl, '_blank');
+                await new Promise(resolve => chrome.runtime.sendMessage({ type: 'CLOSE_OFFER_TABS' }, resolve));
+              } catch (e) { }
+              await SharedUtils.sleep(500);
 
-                await new Promise(resolve => {
-                  chrome.runtime.sendMessage({
-                    type: 'TRACK_NEW_TAB',
-                    offerUrl: offerUrl
-                  }, resolve);
+              // Click the button/link naturally
+              if (viewDealBtn.tagName === 'A' && viewDealBtn.getAttribute('href')) {
+                // If it's a link, we can still click it or open it, but let's click to mimic real user
+                // and let the background track the new tab
+                const href = viewDealBtn.getAttribute('href');
+                // If target is not blank, force it
+                viewDealBtn.target = "_blank";
+              }
+
+              DomUtils.strongClick(viewDealBtn);
+
+              const waitTime = SharedUtils.randomInRange(T.offerWait.min, T.offerWait.max);
+              log(`  Waiting ${(waitTime / 1000).toFixed(1)}s for new tab...`);
+              await SharedUtils.sleep(waitTime);
+
+              // Poll for tab info until we get it (tab might not be fully loaded yet)
+              let tabInfo = null;
+              for (let tabAttempt = 0; tabAttempt < 10; tabAttempt++) {
+                tabInfo = await new Promise(resolve => {
+                  chrome.runtime.sendMessage({ type: 'GET_MOST_RECENT_OFFER_TAB' }, resolve);
                 });
+                if (tabInfo && tabInfo.url) {
+                  break;
+                }
+                log(`  Waiting for tab to load... (${tabAttempt + 1}/10)`);
+                await SharedUtils.sleep(1000);
+              }
 
-                const waitTime = SharedUtils.randomInRange(T.offerWait.min, T.offerWait.max);
-                log(`  Waiting ${(waitTime / 1000).toFixed(1)}s for new tab to load...`);
-                await SharedUtils.sleep(waitTime);
+              if (tabInfo && tabInfo.url) {
+                log(`  Tracked offer tab URL: ${tabInfo.url}`);
 
                 let paymentData = null;
                 let attempts = 0;
-                let gotData = false;
 
-                while (attempts < T.maxPollAttempts && !gotData) {
+                while (attempts < T.maxPollAttempts) {
                   await SharedUtils.sleep(T.pollInterval);
 
                   paymentData = await new Promise(resolve => {
                     chrome.runtime.sendMessage({
                       type: 'GET_PAYMENT_DATA',
-                      url: offerUrl
+                      offerUrl: tabInfo.url // Use the ACTUAL url from the tab
                     }, resolve);
                   });
 
                   if (paymentData && (paymentData.payNow || paymentData.payAtPickup)) {
                     info.pay_now = paymentData.payNow || "";
                     info.pay_at_pickup = paymentData.payAtPickup || "";
-                    gotData = true;
-                    log(`  Payment data retrieved: pay_now=${info.pay_now}, pay_at_pickup=${info.pay_at_pickup}`);
-                  } else {
-                    attempts++;
-                    log(`  Waiting for payment data... (attempt ${attempts}/${T.maxPollAttempts})`);
+                    info.view_deal_url = tabInfo.url; // Update to real URL
+
+                    log('==================================================');
+                    log('  ✅ SUCCESS: PAYMENT DATA RECEIVED FROM OFFER PAGE');
+                    log(`  URL: ${tabInfo.url}`);
+                    log(`  Pay Now: ${info.pay_now}`);
+                    log(`  Pay at Pickup: ${info.pay_at_pickup}`);
+                    log('==================================================');
+
+                    break;
                   }
+
+                  attempts++;
+                  log(`  Waiting for data... (${attempts}/${T.maxPollAttempts})`);
                 }
 
-                if (!gotData) {
-                  log(`  Payment data not retrieved after ${T.maxPollAttempts} attempts`);
+                if (!info.pay_now && !info.pay_at_pickup) {
+                  log(`  Failed to get payment data after ${T.maxPollAttempts} attempts`);
                 }
 
-                if (newTab && !newTab.closed) {
-                  try {
-                    newTab.close();
-                    log(`  Closed offer tab`);
-                  } catch (e) {
-                    log(`  Could not close tab: ${e.message}`);
-                  }
-                }
+                // Close tabs
+                await new Promise(resolve => chrome.runtime.sendMessage({ type: 'CLOSE_OFFER_TABS' }, resolve));
 
-              } catch (e) {
-                log(`  Error opening/processing offer page: ${e.message}`);
+              } else {
+                log('  Could not detect new offer tab URL from background');
+                // Fallback: try to close tabs just in case
+                await new Promise(resolve => chrome.runtime.sendMessage({ type: 'CLOSE_OFFER_TABS' }, resolve));
               }
             }
 
@@ -537,29 +607,46 @@
               const allModelsReachedMax = TARGET_MODELS.every(model => vehiclesPerModel[model] >= MAX_PER_DATE);
               if (allModelsReachedMax) {
                 log(`  All target models reached max (${MAX_PER_DATE}), stopping this round`);
-                return scrapedCars.length - lastCount;
+                return scrapedCars.length - initialCount;
               }
             }
           }
         }
 
-        const h = document.body.scrollHeight;
-        const count = scrapedCars.length;
+        // Only count as idle when we're truly at the bottom and can't scroll further
+        if (isNearBottom && scrollY === lastScrollY) {
+          idleAtBottom++;
+          log(`  At bottom, cannot scroll further: idle=${idleAtBottom}/${T.maxIdleRounds}`);
 
-        if (h > lastHeight || count > lastCount) {
-          idle = 0;
-          lastHeight = h;
-          lastCount = count;
+          // Try next page button when idle at bottom
+          if (idleAtBottom >= T.maxIdleRounds - 1) {
+            const nextPageBtn = document.querySelector('button.Pagination-NavigationButton_next');
+            if (nextPageBtn && !nextPageBtn.disabled) {
+              log(`  Going to next page...`);
+              nextPageBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              await SharedUtils.sleep(1000);
+              DomUtils.strongClick(nextPageBtn);
+              await SharedUtils.sleep(3000);
+              idleAtBottom = 0;
+              window.scrollTo(0, 0);
+              await SharedUtils.sleep(1000);
+              lastScrollY = 0;
+              continue;
+            }
+          }
         } else {
-          idle++;
-          log(`  No progress: idle=${idle}/${T.maxIdleRounds}`);
+          // Reset idle if we can still scroll
+          idleAtBottom = 0;
         }
 
+        lastScrollY = scrollY;
+
+        // Scroll down by one step
         window.scrollBy(0, T.scrollStep);
         await SharedUtils.sleep(T.scanInterval);
       }
 
-      log(`Scroll loop completed after ${idle} idle rounds`);
+      log(`Scroll loop completed after ${idleAtBottom} idle rounds`);
 
       chrome.runtime.sendMessage({
         type: 'UPDATE_STATE',
@@ -567,7 +654,7 @@
         seenKeys: Array.from(seenKeys)
       });
 
-      return scrapedCars.length - lastCount;
+      return scrapedCars.length - initialCount;
     }
 
     // ============================================================================
@@ -579,49 +666,48 @@
       log("TARGET_MODELS:", TARGET_MODELS);
       log("LOCATION:", LOCATION_TEXT);
 
-      // Round 1: Home page flow
-      if (!isResultsPage()) {
-        if (!isHomeSearchPage()) {
-          log("Not on home search page or results page");
-          return;
-        }
-
-        const now = new Date();
-        const days = DURATIONS[0];
-        const pickupDate = SharedUtils.addDays(now, 1);
-        const dropoffDate = SharedUtils.addDays(pickupDate, days);
-
-        await fillLocation();
-        await SharedUtils.sleep(500);
-
-        const okDates = await setDatesOnResults(pickupDate, dropoffDate);
-        if (!okDates) {
-          log("Date selection failed");
-        }
-
-        await SharedUtils.sleep(500);
-        await clickSearchNow();
-
-        const okRes = await waitForResults();
-        if (!okRes) {
-          log("Results page not loaded");
-          return;
-        }
-
-        log(`Waiting ${T.resultExtraWait/1000}s...`);
-        await SharedUtils.sleep(T.resultExtraWait);
-
-        const pickupStr = SharedUtils.formatDateLocal(pickupDate);
-        const dropoffStr = SharedUtils.formatDateLocal(dropoffDate);
-
-        log(`Round1 HOME | ${pickupStr} -> ${dropoffStr} | days=${days}`);
-        log("Round1 scrape...");
-        const round1Count = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
-        log(`Round1 done. Collected ${round1Count} vehicles for this date. Total rows: ${scrapedCars.length}`);
+      // Must start from home search page
+      if (!isHomeSearchPage()) {
+        log("Not on home search page. Please navigate to the DiscoveryCars home page.");
+        return;
       }
 
-      // Subsequent rounds
-      for (let i = (isResultsPage() ? 0 : 1); i < DURATIONS.length; i++) {
+      // Round 1: Home page flow
+      const now = new Date();
+      const days = DURATIONS[0];
+      const pickupDate = SharedUtils.addDays(now, 1);
+      const dropoffDate = SharedUtils.addDays(pickupDate, days);
+
+      await fillLocation();
+      await SharedUtils.sleep(500);
+
+      const okDates = await setDatesOnResults(pickupDate, dropoffDate);
+      if (!okDates) {
+        log("Date selection failed");
+      }
+
+      await SharedUtils.sleep(500);
+      await clickSearchNow();
+
+      const okRes = await waitForResults();
+      if (!okRes) {
+        log("Results page not loaded");
+        return;
+      }
+
+      log(`Waiting ${T.resultExtraWait / 1000}s...`);
+      await SharedUtils.sleep(T.resultExtraWait);
+
+      const pickupStr = SharedUtils.formatDateLocal(pickupDate);
+      const dropoffStr = SharedUtils.formatDateLocal(dropoffDate);
+
+      log(`Round1 HOME | ${pickupStr} -> ${dropoffStr} | days=${days}`);
+      log("Round1 scrape...");
+      const round1Count = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
+      log(`Round1 done. Collected ${round1Count} vehicles for this date. Total rows: ${scrapedCars.length}`);
+
+      // Subsequent rounds (start from index 1 since round 1 already done)
+      for (let i = 1; i < DURATIONS.length; i++) {
         const days = DURATIONS[i];
         const now = new Date();
         const pickupDate = SharedUtils.addDays(now, 1);
@@ -646,13 +732,17 @@
           continue;
         }
 
-        log(`Waiting ${T.resultExtraWait/1000}s...`);
+        log(`Waiting ${T.resultExtraWait / 1000}s...`);
         await SharedUtils.sleep(T.resultExtraWait);
 
         log("Scraping...");
         const roundCount = await autoScrollAndScrape({ pickup_date: pickupStr, dropoff_date: dropoffStr, rental_days: days });
         log(`Round${i + 1} done. Collected ${roundCount} vehicles for this date. Total rows: ${scrapedCars.length}`);
       }
+
+      // Wait for any pending offer page extraction to complete
+      log("Waiting 15s for final extraction to complete...");
+      await SharedUtils.sleep(15000);
 
       chrome.runtime.sendMessage({ type: 'STOP_SCRAPING' }, () => {
         log("Background worker notified of completion");

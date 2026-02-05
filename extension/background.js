@@ -289,7 +289,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     // Also check for offer pages when scraping is active
     // DiscoveryCars uses '/offer/', Expedia uses '/carsearch/details'
     if (!shouldExtract && scrapingState.active &&
-        (tab.url.includes('/offer/') || tab.url.includes('/carsearch/details'))) {
+      (tab.url.includes('/offer/') || tab.url.includes('/carsearch/details'))) {
       console.log('[BG] Detected offer page while scraping is active');
       shouldExtract = true;
 
