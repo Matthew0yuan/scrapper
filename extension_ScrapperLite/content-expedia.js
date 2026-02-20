@@ -216,9 +216,8 @@
       log(`Match found! ${fullName} matches target: ${matchedModel}`);
     }
 
-    const { category_code, category_group } = ModelClassifier.classifyModel(fullName);
     const avgDaily = meta.rental_days > 0 ? SharedUtils.round2(priceValue / meta.rental_days) : '';
-    const uniqueKey = `${baseName}|${company}|${priceValue}|${meta.pickup_date}|${meta.dropoff_date}|${category_code}`;
+    const uniqueKey = `${baseName}|${company}|${priceValue}|${meta.pickup_date}|${meta.dropoff_date}`;
 
     return {
       car_name_full: fullName,
@@ -229,9 +228,10 @@
       pickup_date: meta.pickup_date,
       dropoff_date: meta.dropoff_date,
       rental_days: meta.rental_days,
-      category_code,
-      category_group,
-      view_deal_url: button.getAttribute('href') || '',
+
+      pickup_date: meta.pickup_date,
+      dropoff_date: meta.dropoff_date,
+      rental_days: meta.rental_days,
       pay_now: '',
       pay_at_pickup: '',
       _uniqueKey: uniqueKey,
@@ -297,7 +297,8 @@
       if (paymentData?.payNow || paymentData?.payAtPickup) {
         carInfo.pay_now = paymentData.payNow || '';
         carInfo.pay_at_pickup = paymentData.payAtPickup || '';
-        carInfo.view_deal_url = offerTabInfo.url;
+        carInfo.pay_now = paymentData.payNow || '';
+        carInfo.pay_at_pickup = paymentData.payAtPickup || '';
         log('Successfully retrieved payment data!');
         log(`  Pay now: ${carInfo.pay_now}`);
         log(`  Pay at pickup: ${carInfo.pay_at_pickup}`);
